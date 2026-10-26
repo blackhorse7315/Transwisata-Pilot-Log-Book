@@ -1,0 +1,27 @@
+rules_version = '2';
+service cloud.firestore {
+ match /databases/{database}/documents {
+  function logged(){return request.auth != null;}
+  function userPath(){return /databases/$(database)/documents/userAccess/$(request.auth.uid);}
+  function admin(){return logged() && exists(userPath()) && get(userPath()).data.role == 'admin';}
+  function pilot(pid){return logged() && exists(userPath()) && get(userPath()).data.role == 'pilot' && get(userPath()).data.pilotId == pid;}
+  match /userAccess/{uid} {
+   allow read: if logged() && (request.auth.uid == uid || admin());
+   allow create: if admin() && request.resource.data.keys().hasOnly(['role','pilotId','username','createdAt','createdBy'])
+      && request.resource.data.role == 'pilot' && request.resource.data.pilotId is string
+      && request.resource.data.username is string && request.resource.data.createdBy == request.auth.uid;
+   allow update,delete: if admin();
+  }
+  match /logbook/{docId} {
+   allow read: if admin() || (docId == 'config' && logged() && exists(userPath()) && get(userPath()).data.role == 'pilot');
+   allow write: if admin();
+  }
+  match /logbookPilots/{pid} {
+   allow read: if admin() || pilot(pid);
+   allow create,delete: if admin();
+   allow update: if admin() || (pilot(pid)
+      && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['flights','updatedAt','updatedBy'])
+      && request.resource.data.flights is list && request.resource.data.flights.size() <= 5000);
+  }
+ }
+}
