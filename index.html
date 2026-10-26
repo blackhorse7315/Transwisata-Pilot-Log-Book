@@ -56,7 +56,7 @@ function hideLogin(){document.getElementById('cloudGate').style.display='none'}
 async function signInCloud(event){
  event.preventDefault();
  const email=document.getElementById('cloudEmail').value.trim(),password=document.getElementById('cloudPassword').value;
- try{await fbAuth.signInWithEmailAndPassword(email,password)}catch(e){showLogin('Login failed: '+e.message)}
+ try{document.getElementById('cloudGateMessage').textContent='Signing in...';await fbAuth.signInWithEmailAndPassword(email,password)}catch(e){showLogin('Login failed: '+e.message)}
 }
 async function cloudSave(){
  if(!cloudReady||!cloudUser)return;
@@ -116,10 +116,12 @@ fbAuth.onAuthStateChanged(async user=>{
  cloudReady=false;
  if(!user){cloudUser=null;cloudProfile=null;showLogin();return}
  cloudUser=user;
+ showLogin('Authentication successful. Checking Firestore access...');
  try{
-  const profileSnap=await fbDb.doc('userAccess/'+user.uid).get();
+  const profileSnap=await Promise.race([fbDb.doc('userAccess/'+user.uid).get(),new Promise((_,reject)=>setTimeout(()=>reject(Error('Firestore did not respond within 15 seconds. Check network, database and rules.')),15000))]);
   if(!profileSnap.exists)throw Error('Account not authorized. Ask admin to create userAccess/'+user.uid);
   cloudProfile=profileSnap.data();
+  showLogin('Loading your logbook from Firestore...');
   await cloudLoad();
  }catch(e){console.error(e);showLogin('Access denied: '+e.message)}
 });
@@ -416,6 +418,7 @@ document.addEventListener('focusout',e=>{if(e.target.matches('input.flight-hours
 document.addEventListener('input',e=>{if(e.target.id==='logSearch'){state.query=e.target.value;const pos=e.target.selectionStart;$('#view-logbook').innerHTML=logbook();let inp=$('#logSearch');inp.focus();inp.setSelectionRange(pos,pos)}});
 document.addEventListener('change',e=>{let map={filterFleet:'aircraft',filterDuty:'duty',filterFrom:'from',filterTo:'to',reportFrom:'reportFrom',reportTo:'reportTo'};if(map[e.target.id]){state[map[e.target.id]]=e.target.value;render()}});
 $('#importFile').addEventListener('change',e=>importFile(e.target.files[0]));
+document.getElementById('cloudLoginForm').addEventListener('submit',signInCloud);
 render();
 })();
 document.addEventListener('focusout',event=>{
@@ -426,7 +429,7 @@ document.addEventListener('focusout',event=>{
 <div id="cloudGate" style="position:fixed;inset:0;z-index:999999;background:#101a2e;display:flex;align-items:center;justify-content:center;padding:20px;color:#1e293b">
  <div style="background:white;padding:28px;border-radius:18px;width:min(440px,100%);box-shadow:0 20px 70px #0006">
  <h2 style="margin:0 0 8px">Transwisata Pilot Logbook</h2><p id="cloudGateMessage" style="color:#64748b">Connecting to Firebase...</p>
- <form onsubmit="signInCloud(event)" style="display:grid;gap:12px;margin-top:18px">
+ <form id="cloudLoginForm" style="display:grid;gap:12px;margin-top:18px">
  <label>Email<input id="cloudEmail" type="email" required autocomplete="username" style="width:100%;padding:12px;border:1px solid #ccd5e2;border-radius:9px"></label>
  <label>Password<input id="cloudPassword" type="password" required autocomplete="current-password" style="width:100%;padding:12px;border:1px solid #ccd5e2;border-radius:9px"></label>
  <button type="submit" style="background:#3867db;color:white;border:0;padding:13px;border-radius:9px;font-weight:bold">Sign In</button>
