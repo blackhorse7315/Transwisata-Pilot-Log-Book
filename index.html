@@ -34,13 +34,13 @@
  <div class="side-bottom"><div class="mini-status"><span class="live-dot"></span><div><b>Local data active</b><div style="color:#8ea2c1;font-size:10px;margin-top:3px">Stored on this browser</div></div></div><small>TRANSWISATA PILOT LOGBOOK · v1.0</small></div>
 </aside>
 <div class="main"><header class="topbar"><div style="display:flex;align-items:center;gap:13px"><button class="mobile-menu" id="mobileMenu" aria-label="Open menu"><svg class="ico" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button><div class="breadcrumb">Flight Operations <span style="margin:0 8px;color:#c2cad7">/</span> <b id="breadcrumb">Overview</b></div></div><div class="top-actions"><span class="today" id="today"></span><select class="top-pilot" id="activePilot" aria-label="Select pilot logbook"></select><span class="avatar" id="avatar">TW</span></div></header>
-<main class="workspace"><div id="demoBanner"></div><div id="view-overview" class="view"></div><div id="view-logbook" class="view" hidden></div><div id="view-reports" class="view" hidden></div><div id="view-pilots" class="view" hidden></div><div id="view-fleet" class="view" hidden></div><div id="view-settings" class="view" hidden></div><div class="footerbar"><span>© 2026 PT Transwisata Prima Aviation · Flight Operations</span><span>Local-first prototype · Not an approved official flight record system</span></div></main>
+<main class="workspace"><div id="demoBanner"></div><div id="view-overview" class="view"></div><div id="view-logbook" class="view" hidden></div><div id="view-reports" class="view" hidden></div><div id="view-pilots" class="view" hidden></div><div id="view-fleet" class="view" hidden></div><div id="view-settings" class="view" hidden></div><div class="footerbar"><span>© 2026 PT Transwisata Prima Aviation · Flight Operations</span><span>Firebase-backed application · Not an approved official flight record system</span></div></main>
 </div></div>
 <div class="modal-backdrop" id="modalWrap" role="presentation"><div class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle"><div class="modal-head"><div><h2 id="modalTitle">New entry</h2><small id="modalSub"></small></div><button class="modal-close" id="closeModal" aria-label="Close"><svg class="ico" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></button></div><div class="modal-body" id="modalBody"></div><div class="modal-foot" id="modalFoot"></div></div></div>
 <div class="toast" id="toast"></div><input type="file" id="importFile" accept=".csv,.json,text/csv,application/json" hidden>
 <div id="cloudGate" style="position:fixed;inset:0;z-index:999999;background:#101a2e;display:flex;align-items:center;justify-content:center;padding:20px;color:#1e293b">
  <div style="background:white;padding:28px;border-radius:18px;width:min(440px,100%);box-shadow:0 20px 70px #0006">
- <h2 style="margin:0 0 8px">Transwisata Pilot Logbook</h2><p id="cloudGateMessage" style="color:#64748b">Connecting to Firebase...</p>
+ <h2 style="margin:0 0 8px">Transwisata Pilot Logbook</h2><p id="cloudGateMessage" style="color:#64748b">Sign in to load your data from Firebase.</p>
  <form id="cloudLoginForm" style="display:grid;gap:12px;margin-top:18px">
  <label>Email<input id="cloudEmail" type="email" required autocomplete="username" style="width:100%;padding:12px;border:1px solid #ccd5e2;border-radius:9px"></label>
  <label>Password<input id="cloudPassword" type="password" required autocomplete="current-password" style="width:100%;padding:12px;border:1px solid #ccd5e2;border-radius:9px"></label>
@@ -56,6 +56,7 @@ const firebaseConfig={apiKey:"AIzaSyBOvXaTNP2TYCG6fjJ6U9R3MgcyIVvyRWk",authDomai
 if(typeof firebase==='undefined'){document.getElementById('cloudGateMessage').textContent='Firebase SDK failed to load. Check internet connection and refresh the page.';throw Error('Firebase SDK unavailable')}
 firebase.initializeApp(firebaseConfig);
 const fbAuth=firebase.auth(), fbDb=firebase.firestore();
+// Offline persistence is deliberately not enabled; Firestore is the sole data source.
 let cloudUser=null,cloudProfile=null,cloudReady=false,cloudSaving=false,cloudQueue=Promise.resolve();
 const cloudMeta=()=>({updatedAt:firebase.firestore.FieldValue.serverTimestamp(),updatedBy:cloudUser?.uid||null});
 function showLogin(message='Sign in to access your Transwisata Logbook.'){
@@ -68,81 +69,113 @@ async function signInCloud(event){
  const email=document.getElementById('cloudEmail').value.trim(),password=document.getElementById('cloudPassword').value;
  try{showLogin('Signing in...');await fbAuth.signInWithEmailAndPassword(email,password)}catch(e){showLogin('Login failed: '+e.message)}
 }
-async function cloudSave(){
- if(!cloudReady||!cloudUser)return;
- if(cloudProfile.role==='admin'){
-  const batch=fbDb.batch();
-  batch.set(fbDb.doc('logbook/config'),{fleet:db.fleet,missions:missionList,duties:dutyList,...cloudMeta()});
-  const allIds=new Set(db.pilots.map(p=>p.id));
-  for(const p of db.pilots){
-   batch.set(fbDb.doc('logbookPilots/'+p.id),{profile:p,flights:db.flights.filter(f=>f.pilotId===p.id),...cloudMeta()});
+async function cloudSave(snapshot){
+ if(!cloudReady||!cloudUser||!cloudProfile)throw Error('Not connected to Firebase');
+ const role=cloudProfile.role;
+ if(role==='admin'){
+  const previous=await fbDb.collection('logbookPilots').get();
+  const existing=new Set(previous.docs.map(x=>x.id));
+  const desired=new Set(snapshot.pilots.map(x=>x.id));
+  const ops=[];
+  ops.push({kind:'set',ref:fbDb.doc('logbook/config'),data:{fleet:snapshot.fleet,missions:snapshot.missions,duties:snapshot.duties,...cloudMeta()}});
+  for(const p of snapshot.pilots){
+   const flights=snapshot.flights.filter(f=>f.pilotId===p.id);
+   ops.push({kind:'set',ref:fbDb.doc('logbookPilots/'+p.id),data:{profile:p,flights,...cloudMeta()}});
   }
-  // Deletions require dedicated admin maintenance. Do not silently overwrite old cloud docs.
-  await batch.commit();
- }else{
+  for(const id of existing)if(!desired.has(id))ops.push({kind:'delete',ref:fbDb.doc('logbookPilots/'+id)});
+  // Firestore batch has a 500-write limit; use bounded chunks.
+  for(let i=0;i<ops.length;i+=400){
+   const batch=fbDb.batch();
+   for(const op of ops.slice(i,i+400))op.kind==='delete'?batch.delete(op.ref):batch.set(op.ref,op.data);
+   await batch.commit();
+  }
+ }else if(role==='pilot'){
   const id=cloudProfile.pilotId;
-  if(!id)throw Error('Pilot ID is not assigned to this account.');
-  const ref=fbDb.doc('logbookPilots/'+id);
-  await ref.update({flights:db.flights.filter(f=>f.pilotId===id),...cloudMeta()});
- }
+  if(!id)throw Error('Pilot ID is missing from your account');
+  await fbDb.doc('logbookPilots/'+id).update({
+   flights:snapshot.flights.filter(f=>f.pilotId===id),...cloudMeta()
+  });
+ }else throw Error('Unauthorized role');
 }
 function queueCloudSave(){
- if(!cloudReady)return;
- cloudQueue=cloudQueue.then(()=>cloudSave()).catch(e=>{console.error(e);notify('Cloud save failed: '+e.message,true)});
+ if(!cloudReady||!cloudUser){showLogin('Firebase is not connected. Sign in before editing.');return false}
+ const snapshot=JSON.parse(JSON.stringify({...db,missions:missionList,duties:dutyList}));
+ cloudQueue=cloudQueue.then(async()=>{
+  await cloudSave(snapshot);
+  document.getElementById('syncWarning')?.remove();
+  notify('Saved to Firebase Cloud Firestore');
+ }).catch(e=>{
+  console.error('Firestore save failed:',e);
+  notify('Firebase save failed: '+e.message,true);
+  showSyncError(e.message);
+ });
+ return true;
+}
+function showSyncError(message){
+ let box=document.getElementById('syncWarning');
+ if(!box){
+  box=document.createElement('div');box.id='syncWarning';
+  box.style='position:fixed;top:12px;left:12px;right:12px;z-index:99999;background:#fee2e2;color:#991b1b;padding:12px 18px;border-radius:12px;box-shadow:0 5px 20px #0002;font-size:14px';
+  document.body.appendChild(box);
+ }
+ box.textContent='Firebase sync failed: '+message+' — changes may not be saved. Reload only after resolving this issue.';
 }
 async function cloudLoad(){
  const role=cloudProfile.role;
+ let loaded={version:VERSION,pilots:[],flights:[],fleet:[],activePilotId:'all',demo:false};
  if(role==='admin'){
-  const [config,pilotsSnap]=await Promise.all([fbDb.doc('logbook/config').get(),fbDb.collection('logbookPilots').get()]);
+  const [config,pilotsSnap]=await Promise.all([
+   fbDb.doc('logbook/config').get({source:'server'}),
+   fbDb.collection('logbookPilots').get({source:'server'})
+  ]);
   if(config.exists){
-   const v=config.data();db.fleet=v.fleet||db.fleet;
-   if(Array.isArray(v.missions))missionList=v.missions;
-   if(Array.isArray(v.duties))dutyList=v.duties;
-  }
-  if(!pilotsSnap.empty){
-   db.pilots=pilotsSnap.docs.map(d=>d.data().profile).filter(Boolean);
-   db.flights=pilotsSnap.docs.flatMap(d=>d.data().flights||[]);
-  }else{
-   // First admin sign-in: use current local data only as an explicit import.
-   db=defaults();
-  }
+   const v=config.data();
+   loaded.fleet=Array.isArray(v.fleet)?v.fleet:[];
+   missionList=Array.isArray(v.missions)?v.missions:[];
+   dutyList=Array.isArray(v.duties)?v.duties:[];
+  }else{missionList=[];dutyList=[]}
+  loaded.pilots=pilotsSnap.docs.map(d=>d.data().profile).filter(Boolean);
+  loaded.flights=pilotsSnap.docs.flatMap(d=>d.data().flights||[]);
   personalMode=false;personalPilotId=null;
  }else if(role==='pilot'){
   const id=cloudProfile.pilotId;
-  if(!id)throw Error('This user has no pilotId assigned in userAccess.');
-  const [config,pilotSnap]=await Promise.all([fbDb.doc('logbook/config').get(),fbDb.doc('logbookPilots/'+id).get()]);
-  if(!pilotSnap.exists)throw Error('Pilot profile does not exist in Firestore.');
+  if(!id)throw Error('Your userAccess document has no pilotId');
+  const [config,pilotSnap]=await Promise.all([
+   fbDb.doc('logbook/config').get({source:'server'}),
+   fbDb.doc('logbookPilots/'+id).get({source:'server'})
+  ]);
+  if(!pilotSnap.exists)throw Error('Pilot document logbookPilots/'+id+' not found. Admin must create this pilot first.');
   const v=pilotSnap.data(),c=config.exists?config.data():{};
-  db={version:VERSION,pilots:[v.profile],flights:v.flights||[],fleet:c.fleet||[],activePilotId:id,demo:false};
-  if(Array.isArray(c.missions))missionList=c.missions;
-  if(Array.isArray(c.duties))dutyList=c.duties;
+  loaded.pilots=[v.profile];
+  loaded.flights=v.flights||[];
+  loaded.fleet=c.fleet||[];
+  loaded.activePilotId=id;
+  missionList=c.missions||[];
+  dutyList=c.duties||[];
   personalMode=true;personalPilotId=id;
- }else throw Error('Access role must be admin or pilot.');
+ }else throw Error('Access role must be admin or pilot');
+ db=loaded;
  cloudReady=true;
- hideLogin();render();
- notify('Connected to Firebase · '+(role==='admin'?'Admin':'Personal Pilot'));
+ hideLogin();
+ render();
+ notify('Loaded from Firebase Cloud Firestore');
 }
 fbAuth.onAuthStateChanged(async user=>{
  cloudReady=false;
- if(!user){cloudUser=null;cloudProfile=null;showLogin('Please sign in with your registered Firebase account.');return}
+ if(!user){cloudUser=null;cloudProfile=null;showLogin('Sign in to load your data from Firebase.');return}
  cloudUser=user;
- showLogin('Authentication successful. Checking Firestore access...');
+ showLogin('Authentication successful. Checking Firestore permissions...');
  try{
-  const profileSnap=await Promise.race([fbDb.doc('userAccess/'+user.uid).get(),new Promise((_,reject)=>setTimeout(()=>reject(Error('Firestore did not respond within 15 seconds. Check network, database and rules.')),15000))]);
-  if(!profileSnap.exists)throw Error('User access not configured. In Firestore create userAccess/'+user.uid+' with field role = admin (or role = pilot and pilotId).');
+  const profileSnap=await fbDb.doc('userAccess/'+user.uid).get({source:'server'});
+  if(!profileSnap.exists)throw Error('Create userAccess/'+user.uid+' with role = admin (or pilot and pilotId) in Firestore.');
   cloudProfile=profileSnap.data();
-  showLogin('Loading your logbook from Firestore...');
+  showLogin('Loading records directly from Cloud Firestore...');
   await cloudLoad();
- }catch(e){console.error(e);showLogin('Access denied: '+e.message)}
+ }catch(e){console.error(e);showLogin('Firebase access error: '+e.message)}
 });
-const KEY='twa_pilot_logbook_v1', VERSION=1;
-const MISSION_KEY='transwisata_logbook_missions_v1';
+const VERSION=1;
 const DEFAULT_MISSIONS=['VIP','Base Training','PPC Aircraft','LOFT','PPC SIM','Movement','Test Flight','Maintenance','Ground Run'];
-let missionList;
-try {
- const stored=JSON.parse(localStorage.getItem(MISSION_KEY));
- missionList=Array.isArray(stored)&&stored.every(m=>m&&typeof m.name==='string'&&typeof m.id==='string')?stored:DEFAULT_MISSIONS.map((name,i)=>({id:'mission-'+i,name}));
-} catch(e) {missionList=DEFAULT_MISSIONS.map((name,i)=>({id:'mission-'+i,name}));}
+let missionList=[];
 const TIME_FIELDS=['dayPic','daySic','nightPic','nightSic','simPic','simSic','mountainPic','mountainSic','offshorePic','offshoreSic','externalPic','externalSic','highPic','highSic','instructorPic','instructorSic','ccpPic','ccpSic','ratingPic','ratingSic'];
 function timeInput(key,label,f){let val=f[key]!=null?fmt(f[key]):'';if(f[key]==null){if(key==='dayPic'&&f.role==='PIC')val=fmt(f.day||0);if(key==='daySic'&&f.role==='SIC')val=fmt(f.day||0);if(key==='nightPic'&&f.role==='PIC')val=fmt(f.night||0);if(key==='nightSic'&&f.role==='SIC')val=fmt(f.night||0)}return `<div class="field"><label>${label} (HH:MM)</label><input name="${key}" class="flight-hours" inputmode="numeric" placeholder="00:00" pattern="[0-9]{1,3}:[0-5][0-9]" value="${val==='00:00'?'':val}"></div>`}
 function compactHourCard(title,keys,f,icon='✈️',tone='blue'){
@@ -165,18 +198,15 @@ function aircraftHoursSection(f,aircraft){
 function syncRatingHours(form){if(!form)return;for(const role of ['Pic','Sic']){const day=parseTime(form.elements['day'+role]?.value)||0,night=parseTime(form.elements['night'+role]?.value)||0;const target=form.elements['rating'+role];if(target)target.value=fmt(day+night)}}
 
 function syncAircraftHours(form){let a=getAircraft(form.elements.aircraftId.value),container=form.querySelector('#flightHoursSection');if(container){let draft={};TIME_FIELDS.forEach(k=>{let el=form.elements[k];if(el){let v=parseTime(el.value);draft[k]=v??0}});container.innerHTML=aircraftHoursSection(draft,a);syncRatingHours(form)}}
-function saveMissions(){localStorage.setItem(MISSION_KEY,JSON.stringify(missionList));queueCloudSave()}
+function saveMissions(){queueCloudSave()}
 function missionOptions(selected=''){
  let names=missionList.map(m=>m.name);
  if(selected&&!names.includes(selected))names.push(selected);
  return '<option value="" disabled '+(!selected?'selected':'')+'>Select mission remarks...</option>'+names.map(name=>`<option value="${esc(name)}" ${selected===name?'selected':''}>${esc(name)}${missionList.some(m=>m.name===name)?'':' (previous category)'}</option>`).join('');
 }
-const DUTY_KEY='transwisata_logbook_duties_v1';
 const DEFAULT_DUTIES=['PIC','SIC','Instructor','CCP'];
-let dutyList;
-try {const a=JSON.parse(localStorage.getItem(DUTY_KEY));dutyList=Array.isArray(a)&&a.every(x=>x&&typeof x.id==='string'&&typeof x.name==='string')?a:DEFAULT_DUTIES.map((name,i)=>({id:'duty-'+i,name}));}
-catch(e){dutyList=DEFAULT_DUTIES.map((name,i)=>({id:'duty-'+i,name}));}
-function saveDuties(){localStorage.setItem(DUTY_KEY,JSON.stringify(dutyList));queueCloudSave()}
+let dutyList=[];
+function saveDuties(){queueCloudSave()}
 function dutyKind(name){const n=String(name||'').toLowerCase();return n==='instructor'?'instructor':n==='ccp'?'ccp':''}
 function dutyOptions(selected='PIC'){const values=dutyList.map(x=>x.name);if(selected&&!values.includes(selected))values.push(selected);return values.map(n=>`<option value="${esc(n)}" ${n===selected?'selected':''}>${esc(n)}</option>`).join('')}
 function dutySettings(){return `<section class="panel" style="margin-top:20px;padding:22px 24px"><div class="panel-head" style="padding:0 0 14px"><div><h2>Duty / Capacity Management</h2><p>Manage PIC, SIC, Instructor, CCP and other duty options.</p></div><button class="btn btn-primary" data-act="newDuty">${ic('plus')} Add Duty</button></div>${dutyList.map(x=>`<div class="setting-row"><div><strong>${esc(x.name)}</strong></div><div style="display:flex;gap:8px"><button class="btn btn-sm" data-act="editDuty" data-id="${esc(x.id)}">Edit</button><button class="btn btn-danger btn-sm" data-act="deleteDuty" data-id="${esc(x.id)}">Delete</button></div></div>`).join('')}<p class="info-note">Instructor and CCP are recognized by their exact names (case-insensitive). Existing flight records retain their recorded capacity.</p></section>`}
@@ -192,21 +222,7 @@ function missionSettings(){return `<section class="panel" style="margin-top:20px
 function deleteMission(id){const m=missionList.find(x=>x.id===id);if(!m)return;if(!confirm('Delete mission category "'+m.name+'"? Existing flight records will remain unchanged.'))return;missionList=missionList.filter(x=>x.id!==id);saveMissions();render();notify('Mission category deleted.')}
 function saveMission(){let form=$('#missionForm'),d=readForm(form),name=d.name.trim();if(!name){notify('Mission name is required.',true);return}if(missionList.some(m=>m.name.toLowerCase()===name.toLowerCase()&&m.id!==state.editing)){notify('Mission name already exists.',true);return}let current=missionList.find(m=>m.id===state.editing);if(current)current.name=name;else missionList.push({id:uid('mission'),name});saveMissions();closeModal();render();notify('Mission category saved.')}
 
-const defaults=()=>({version:VERSION,pilots:[
-{id:'p1',name:'Capt. M. Ramdani M',rank:'Captain',license:'',active:true},
-{id:'p2',name:'Capt. Sofian M. L. Tobing',rank:'Captain',license:'',active:true},
-{id:'p3',name:'Capt. Susetyo Harijanto',rank:'Captain',license:'',active:true},
-{id:'p4',name:'Capt. S. Teddy Prabowo',rank:'Captain',license:'',active:true},
-{id:'p5',name:'Capt. Marcelino B.',rank:'Captain',license:'',active:true},
-{id:'p6',name:'Capt. M. Sofwan',rank:'Captain',license:'',active:true},
-{id:'p7',name:'Capt. Rico Febdiandana',rank:'Captain',license:'',active:true},
-{id:'p8',name:'Capt. Alfajri',rank:'Captain',license:'',active:true},
-{id:'p9',name:'FO Riza Hanindita',rank:'First Officer',license:'',active:true},
-{id:'p10',name:'FO Henaldy Arifia S',rank:'First Officer',license:'',active:true},
-{id:'p11',name:'FO Wawan Setiawan',rank:'First Officer',license:'',active:true}],
-fleet:[{id:'a1',reg:'PK-TWV',type:'Bell 412EP',category:'Helicopter'}, {id:'a2',reg:'PK-TWZ',type:'AW109S Grand',category:'Helicopter'}, {id:'a3',reg:'PK-TWX',type:'Beechcraft King Air 350i',category:'Fixed Wing'}, {id:'a4',reg:'PK-TWW',type:'CASA 212-200',category:'Fixed Wing'}, {id:'a5',reg:'PK-TWY',type:'Gulfstream IV-SP',category:'Fixed Wing'}],flights:[],activePilotId:'p1',demo:false});
-let db;
-try{const raw=localStorage.getItem(KEY);db=raw?JSON.parse(raw):defaults();if(!db||!Array.isArray(db.flights)||!Array.isArray(db.pilots)||!Array.isArray(db.fleet))throw Error();}catch(e){db=defaults()}
+let db={version:VERSION,pilots:[],fleet:[],flights:[],activePilotId:'all',demo:false};
 let personalPilotId=null;
 let personalMode=!!personalPilotId;
 if(personalMode && db.pilots.some(p=>p.id===personalPilotId)) db.activePilotId=personalPilotId;
@@ -223,7 +239,7 @@ const monthShort=(d)=>new Date(d+'T12:00:00Z').toLocaleDateString('en-US',{month
 const getPilot=id=>db.pilots.find(x=>x.id===id);
 const getAircraft=id=>db.fleet.find(x=>x.id===id);
 const initial=n=>String(n||'TW').split(/\s+/).filter(w=>!/^(capt\.|fo)$/i.test(w)).slice(0,2).map(w=>w[0]).join('').toUpperCase();
-const persist=()=>{try{localStorage.setItem(KEY,JSON.stringify(db));queueCloudSave();return true}catch(e){notify('Unable to save: browser storage is full or blocked. Export a backup.',true);return false}};
+const persist=()=>queueCloudSave();
 let tTimer;const notify=(msg,error=false)=>{let e=$('#toast');e.textContent=msg;e.className='toast show'+(error?' error':'');clearTimeout(tTimer);tTimer=setTimeout(()=>e.className='toast',3500)};
 const paths={layout:'<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',book:'<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><path d="M9 7h7M9 11h7"/>',chart:'<path d="M3 3v18h18"/><path d="m7 16 5-5 4 3 5-7"/>',users:'<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/>',plane:'<path d="M17 21v-8l-5-3V3.5a1.5 1.5 0 0 0-3 0V10l-5 3v8l6.5-2z" transform="translate(1 0)"/>',settings:'<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06-2 2-.06-.06A1.7 1.7 0 0 0 15.87 19a1.7 1.7 0 0 0-1 1.56V21h-2.84v-.44A1.7 1.7 0 0 0 11 19a1.7 1.7 0 0 0-1.87-.34l-.06.06-2-2 .06-.06A1.7 1.7 0 0 0 7 14.87 1.7 1.7 0 0 0 5.44 14H5v-2.84h.44A1.7 1.7 0 0 0 7 10a1.7 1.7 0 0 0-.34-1.87L6.6 8.07l2-2 .06.06A1.7 1.7 0 0 0 10.53 6 1.7 1.7 0 0 0 11.56 4.44V4h2.84v.44A1.7 1.7 0 0 0 15.47 6a1.7 1.7 0 0 0 1.87.34l.06-.06 2 2-.06.06A1.7 1.7 0 0 0 19 10.13a1.7 1.7 0 0 0 1.56 1.03H21V14h-.44A1.7 1.7 0 0 0 19.4 15z"/>',plus:'<path d="M12 5v14M5 12h14"/>',down:'<path d="M12 3v12m-5-5 5 5 5-5M4 18v3h16v-3"/>',upload:'<path d="M12 16V4m-5 5 5-5 5 5M4 16v5h16v-5"/>',search:'<circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/>',clock:'<circle cx="12" cy="12" r="9"/><path d="M12 6v6l4 2"/>',badge:'<rect x="4" y="3" width="16" height="18" rx="3"/><path d="M8 9h8M8 13h8M8 17h5"/>',moon:'<path d="M20.8 14A9 9 0 0 1 10 3.2 9 9 0 1 0 20.8 14z"/>',edit:'<path d="m16 4 4 4-11 11-5 1 1-5z"/><path d="m14 6 4 4"/>',trash:'<path d="M3 6h18M8 6V4h8v2M6 6l1 15h10l1-15M10 10v7M14 10v7"/>',arrow:'<path d="M5 12h14m-6-6 6 6-6 6"/>',print:'<path d="M6 9V3h12v6M6 18H4V9h16v9h-2M6 15h12v6H6z"/>',info:'<circle cx="12" cy="12" r="10"/><path d="M12 11v5M12 7h.01"/>',check:'<path d="m4 12 5 5L20 6"/>',calendar:'<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18"/>',file:'<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 13h8M8 17h8"/>',shield:'<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10"/><path d="m9 12 2 2 4-4"/>',more:'<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>'};
 const ic=(name)=>`<svg class="ico" viewBox="0 0 24 24" aria-hidden="true">${paths[name]||paths.file}</svg>`;
@@ -271,7 +287,7 @@ function reports(){let rows=reportRows(),s=summary(rows);let body=rows.map((f,i)
 return `<div class="report-page">${header('Flight Time Reports',`Printable flight logbook summary · ${esc(scopeName())}`,`<button class="btn" data-act="print">${ic('print')} Print / Save PDF</button>${exportBtn}`)}<div class="notice no-print">${ic('info')}<div><b>Reporting information:</b> Times use UTC. This dashboard totals individual pilot logbook entries; selecting “All Pilots” sums pilot-hours, not unique aircraft operating hours. Review records against approved flight documents before official use.</div></div>${pilotHourCards(rows)}<section class="panel"><div class="panel-head"><div><h2>Report Period</h2><p>Filter the report and print using your browser's PDF destination</p></div><div class="toolbar no-print" style="margin:0"><input type="date" class="filter" id="reportFrom" value="${esc(state.reportFrom)}"><input type="date" class="filter" id="reportTo" value="${esc(state.reportTo)}"><button class="btn btn-sm" data-act="clearReportDates">All dates</button></div></div><div style="padding:5px 20px 20px"><div class="report-paper" style="font-size:12px;color:#546584;font-weight:700">PT TRANSWISATA PRIMA AVIATION · PILOT FLIGHT LOGBOOK REPORT<br><span style="font-weight:500;color:#7f8ea2">${esc(scopeName())} | ${state.reportFrom?dmy(state.reportFrom):'All dates'} — ${state.reportTo?dmy(state.reportTo):'All dates'}</span></div><div class="report-summary"><div class="report-stat"><label>Total flight time</label><div>${fmt(s.total)}</div></div><div class="report-stat"><label>PIC flight time</label><div>${fmt(s.pic)}</div></div><div class="report-stat"><label>SIC flight time</label><div>${fmt(s.sic)}</div></div><div class="report-stat"><label>Night / IFR</label><div style="font-size:17px">${fmt(s.night)} / ${fmt(s.ifr)}</div></div></div><div class="table-wrap"><table class="data-table" style="min-width:850px"><thead><tr><th>#</th><th>Date</th><th>Pilot</th><th>Aircraft</th><th>Route</th><th>Duty</th><th>Total</th><th>Day</th><th>Night</th><th>IFR</th></tr></thead><tbody>${rows.length?body:'<tr><td colspan="10" style="text-align:center;padding:28px">No records in selected period</td></tr>'}<tr style="background:#f4f6fb;font-weight:800"><td colspan="6">TOTAL</td><td>${fmt(s.total)}</td><td>${fmt(rows.reduce((a,f)=>a+(f.day||0),0))}</td><td>${fmt(s.night)}</td><td>${fmt(s.ifr)}</td></tr></tbody></table></div><p class="info-note" style="margin-top:19px">Generated ${new Date().toLocaleString('en-GB')} · UTC times recorded. This is an operator prototype and must be validated against the company's approved recordkeeping procedures.</p></div></section></div>`}
 function pilots(){return header('Pilot Directory','Maintain authorized pilots and personnel metadata. Preview personal logbooks locally. Copy Pilot Link is available after publishing online.',`<button class="btn btn-primary" data-act="newPilot">${ic('plus')} Add Pilot</button>`)+`<div class="people-cards">${db.pilots.map(p=>{let rows=db.flights.filter(f=>f.pilotId===p.id);return `<section class="entity-card"><div class="entity-head"><div class="person-avatar">${esc(initial(p.name))}</div><button class="btn btn-icon btn-sm" data-act="editPilot" data-id="${esc(p.id)}" title="Edit Pilot">${ic('edit')}</button></div><h3>${esc(p.name)}</h3><p>${esc(p.rank)} ${p.license?' · License '+esc(p.license):''}</p><div class="meta-line"><span>${rows.length} flight entries</span><b>${fmt(summary(rows).total+(Number(p.openingHours?.total)||0))} hrs</b></div><div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-sm" data-act="openingHours" data-id="${esc(p.id)}">Historical Hours</button><button class="btn btn-sm" data-act="copyPilotLink" data-id="${esc(p.id)}">${ic('file')} Copy Pilot Link</button><button class="btn btn-sm" data-act="previewPilotLink" data-id="${esc(p.id)}">Preview</button></div></section>`}).join('')}</div>`}
 function fleet(){return header('Company Aircraft Fleet','Aircraft registry used for flight logbook allocation.',`<button class="btn btn-primary" data-act="newAircraft">${ic('plus')} Add Aircraft</button>`)+`<div class="fleet-cards">${db.fleet.map(a=>{let rows=db.flights.filter(f=>f.aircraftId===a.id);return `<section class="entity-card"><div class="entity-head"><div class="entity-symbol">${ic('plane')}</div><button class="btn btn-icon btn-sm" data-act="editAircraft" data-id="${esc(a.id)}" title="Edit Aircraft">${ic('edit')}</button></div><h3>${esc(a.reg)}</h3><p>${esc(a.type)}</p><div class="meta-line"><span>${esc(a.category)} · ${rows.length} entries</span><b>${fmt(summary(rows).total)} hrs</b></div></section>`}).join('')}</div><p class="info-note" style="margin-top:19px">Aircraft totals shown here are sums of pilot logbook entries and may include more than one pilot per physical flight.</p>`}
-function settings(){let all=summary(db.flights);return header('Data & Settings','Data storage, backup, imports, and administrative tools.',`<button class="btn" data-act="backup">${ic('down')} Backup JSON</button>`)+`<div class="panel" style="padding:8px 24px"><div class="setting-row"><div><strong>Data storage · This browser</strong><p>All edits save automatically to this browser's local storage. Data are not synchronized between computers or accounts.</p></div><span class="tag">LOCAL</span></div><div class="setting-row"><div><strong>Full backup</strong><p>Download a JSON file containing ${db.pilots.length} pilots, ${db.fleet.length} aircraft and ${all.flights} flight records. Restore it later or transfer to another browser.</p></div><button class="btn" data-act="backup">${ic('down')} Backup</button></div><div class="setting-row"><div><strong>Restore / Import</strong><p>Restore an exported JSON backup or import flight records from the logbook CSV template. A JSON restore replaces current data after confirmation.</p></div><button class="btn" data-act="import">${ic('upload')} Import File</button></div><div class="setting-row"><div><strong>Export flight records</strong><p>Export current pilot selection in CSV format compatible with spreadsheet applications. UTF-8 encoding with BOM.</p></div><button class="btn" data-act="exportCsv">${ic('down')} Export CSV</button></div><div class="setting-row"><div><strong>Sample flight records</strong><p>Generate clearly marked demonstration entries for testing. Sample entries are not actual operations and should be cleared before production use.</p></div><button class="btn" data-act="loadDemo">${ic('plus')} Load Demo</button></div><div class="setting-row"><div><strong>Clear demonstration records</strong><p>Removes only entries marked as demonstration records. Existing manually entered flights remain.</p></div><button class="btn" data-act="clearDemo">Clear demo</button></div><div class="setting-row"><div><strong>Remove all flight records</strong><p>Destructive action. Export a backup before resetting the operational logbook. Pilot and aircraft directories will be retained.</p></div><button class="btn btn-danger" data-act="clearFlights">${ic('trash')} Clear flights</button></div></div>${dutySettings()}${missionSettings()}<div class="notice" style="margin-top:19px">${ic('shield')}<div><b>Production deployment recommendation:</b> Enable Firebase Authentication and Firestore with per-pilot access rules, admin approvals, audit trail, secure cloud backups, and data migration before relying on this tool for official flight records. This prototype does not provide server-side access control or regulatory certification.</div></div>`}
+function settings(){let all=summary(db.flights);return header('Data & Settings','Data storage, backup, imports, and administrative tools.',`<button class="btn" data-act="backup">${ic('down')} Backup JSON</button>`)+`<div class="panel" style="padding:8px 24px"><div class="setting-row"><div><strong>Data storage · Firebase Cloud Firestore</strong><p>Records are loaded from and saved to Firebase Cloud Firestore. Login is required.</p></div><span class="tag">FIREBASE</span></div><div class="setting-row"><div><strong>Full backup</strong><p>Download a JSON file containing ${db.pilots.length} pilots, ${db.fleet.length} aircraft and ${all.flights} flight records. Restore it later or transfer to another browser.</p></div><button class="btn" data-act="backup">${ic('down')} Backup</button></div><div class="setting-row"><div><strong>Restore / Import</strong><p>Restore an exported JSON backup or import flight records from the logbook CSV template. A JSON restore replaces current data after confirmation.</p></div><button class="btn" data-act="import">${ic('upload')} Import File</button></div><div class="setting-row"><div><strong>Export flight records</strong><p>Export current pilot selection in CSV format compatible with spreadsheet applications. UTF-8 encoding with BOM.</p></div><button class="btn" data-act="exportCsv">${ic('down')} Export CSV</button></div><div class="setting-row"><div><strong>Sample flight records</strong><p>Generate clearly marked demonstration entries for testing. Sample entries are not actual operations and should be cleared before production use.</p></div><button class="btn" data-act="loadDemo">${ic('plus')} Load Demo</button></div><div class="setting-row"><div><strong>Clear demonstration records</strong><p>Removes only entries marked as demonstration records. Existing manually entered flights remain.</p></div><button class="btn" data-act="clearDemo">Clear demo</button></div><div class="setting-row"><div><strong>Remove all flight records</strong><p>Destructive action. Export a backup before resetting the operational logbook. Pilot and aircraft directories will be retained.</p></div><button class="btn btn-danger" data-act="clearFlights">${ic('trash')} Clear flights</button></div></div>${dutySettings()}${missionSettings()}<div class="notice" style="margin-top:19px">${ic('shield')}<div><b>Production deployment recommendation:</b> Enable Firebase Authentication and Firestore with per-pilot access rules, admin approvals, audit trail, secure cloud backups, and data migration before relying on this tool for official flight records. Access is enforced by Firestore security rules. Operational certification and audit controls are still required.</div></div>`}
 function render(){if(personalMode){if(!getPilot(personalPilotId)){document.querySelector('.workspace').innerHTML='<h2>Invalid pilot link</h2><p>Contact the administrator.</p>';return}db.activePilotId=personalPilotId;if(!['overview','logbook','reports'].includes(state.view))state.view='overview';}let routes={overview,logbook,reports,pilots,fleet,settings};let main=navItems.map(([id,label,ico])=>`<button class="nav-button ${state.view===id?'active':''}" data-view="${id}">${ic(ico)} ${label}</button>`).join('');let admin=adminItems.map(([id,label,ico])=>`<button class="nav-button ${state.view===id?'active':''}" data-view="${id}">${ic(ico)} ${label}</button>`).join('');$('#mainNav').innerHTML=main;$('#adminNav').innerHTML=personalMode?'':admin;document.querySelector('#adminNav').previousElementSibling.style.display=personalMode?'none':'';
 Object.entries(routes).forEach(([key,fun])=>{const el=$('#view-'+key);el.hidden=key!==state.view; if(key===state.view)el.innerHTML=fun()});
 $('#breadcrumb').textContent=[...navItems,...adminItems].find(a=>a[0]===state.view)?.[1]||'Dashboard';let select=$('#activePilot');select.style.display=personalMode?'none':'';select.innerHTML=`<option value="all" ${db.activePilotId==='all'?'selected':''}>All Pilots</option>`+pilotOptions(db.activePilotId);let p=getPilot(db.activePilotId);$('#avatar').textContent=initial(p?.name||'TW');$('#today').textContent=new Date().toLocaleDateString('en-GB',{weekday:'short',day:'2-digit',month:'short',year:'numeric'});
