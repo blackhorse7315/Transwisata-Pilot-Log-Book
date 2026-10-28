@@ -625,8 +625,8 @@ function formatHourEntry(input,finalize=false){
 }
 function updateChiefSignaturePreview(){const input=document.querySelector('[data-chief-url]'),target=document.getElementById('chiefSignaturePreview');if(!input||!target)return;const src=driveImageUrl(input.value);target.innerHTML=src?`<img src="${esc(src)}" alt="Signature preview" referrerpolicy="no-referrer" onerror="this.hidden=true;this.nextElementSibling.hidden=false"><small hidden>Image could not be loaded. Check file sharing.</small>`:'<small>Enter a Google Drive image URL to preview.</small>';}
 document.addEventListener('input',e=>{if(e.target.matches('[data-chief-url]'))updateChiefSignaturePreview()});
-document.addEventListener('input',e=>{if(e.target.matches('input.flight-hours')){formatHourEntry(e.target);syncRatingHours(e.target.closest('form'))}});
-document.addEventListener('focusout',e=>{if(e.target.matches('input.flight-hours'))formatHourEntry(e.target,true)});
+document.addEventListener('input',e=>{if(e.target.matches('input.flight-hours, input[data-hour-baseline]')){formatHourEntry(e.target);if(e.target.matches('input.flight-hours'))syncRatingHours(e.target.closest('form'))}});
+document.addEventListener('focusout',e=>{if(e.target.matches('input.flight-hours, input[data-hour-baseline]'))formatHourEntry(e.target,true)});
 document.addEventListener('input',e=>{if(e.target.id==='logSearch'){state.query=e.target.value;const pos=e.target.selectionStart;$('#view-logbook').innerHTML=logbook();let inp=$('#logSearch');inp.focus();inp.setSelectionRange(pos,pos)}});
 document.addEventListener('change',e=>{let map={filterFleet:'aircraft',filterDuty:'duty',filterFrom:'from',filterTo:'to',reportFrom:'reportFrom',reportTo:'reportTo'};if(map[e.target.id]){state[map[e.target.id]]=e.target.value;render()}});
 
@@ -648,12 +648,18 @@ function parsePdfPage(items,pageNum){
  const boundaries=[305,326,348,369,390,411,432,453,474,495,516,537,558,579,600,621,642,663,684,705,726,747,768,789,811];
  const keys=['dayPic','daySic','instructorPic','ccpPic',null,'nightPic','nightSic','instructorNightPic','ccpNightPic',null,'instrumentPic','instrumentSic',null,'offshorePic','offshoreSic',null,'mountainPic','mountainSic',null,'externalPic','externalSic',null,'studentExternal','instructorExternal','ccpExternal',null,null];
  for(let j=0;j<starts.length;j++){
-  let st=starts[j],next=starts[j+1],end=next?next.y:st.y-35;
-  let row=entries.filter(i=>i.y<=st.y+5&&i.y>end+0.1);
-  const cell=(lo,hi)=>pdfCleanCell(row.filter(i=>i.x>=lo&&i.x<hi).sort((a,b)=>b.y-a.y||a.x-b.x).map(i=>i.text).join(' '));
+  let st=starts[j],prev=starts[j-1],next=starts[j+1];
+  // The PDF wraps long destinations both ABOVE and BELOW the date baseline.
+  // Midpoints between date baselines keep every fragment in its own record.
+  let top=prev?(prev.y+st.y)/2:st.y+18;
+  let bottom=next?(st.y+next.y)/2:st.y-18;
+  let row=entries.filter(i=>i.y<=top&&i.y>bottom);
+  const fragments=(lo,hi)=>row.filter(i=>i.x>=lo&&i.x<hi).sort((a,b)=>b.y-a.y||a.x-b.x).map(i=>i.text.trim()).filter(Boolean);
+  const cell=(lo,hi)=>pdfCleanCell(fragments(lo,hi).join(' '));
+  const routeCell=(lo,hi)=>pdfCleanCell(fragments(lo,hi).join('').replace(/\s*[-–]\s*/g,'-'));
   const reg=cell(140,169).replace(/\s/g,'').toUpperCase();
   if(!/^PK-?[A-Z0-9]{3,5}$/.test(reg))continue;
-  let r={date:pdfDate(st.text),crewPic:cell(88,115),crewSic:cell(115,140),reg:reg.replace(/^PK(?!-)/,'PK-'),type:cell(169,193),origin:cell(211,244),destination:cell(244,275),mission:cell(275,305),page:pageNum,sourceLine:j+1};
+  let r={date:pdfDate(st.text),crewPic:cell(88,115),crewSic:cell(115,140),reg:reg.replace(/^PK(?!-)/,'PK-'),type:cell(169,193),origin:routeCell(211,244),destination:routeCell(244,275),mission:cell(275,305),page:pageNum,sourceLine:j+1};
   for(let i=0;i<keys.length;i++){
    const key=keys[i];if(!key)continue;
    const vals=row.filter(v=>v.x>=boundaries[i]&&v.x<boundaries[i+1]).map(v=>pdfHour(v.text)).filter(v=>v!==null);
