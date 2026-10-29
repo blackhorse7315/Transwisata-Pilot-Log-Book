@@ -356,7 +356,7 @@ const BASELINE_MAP={'Total Flight Hours':'total','Day Flight':'day','Night Fligh
 function pilotBaseline(id){return getPilot(id)?.openingHours||{}}
 function activeBaseline(){return db.activePilotId==='all'?{}:pilotBaseline(db.activePilotId)}
 function addBaselineToItems(items,id){const b=pilotBaseline(id);return items.map(x=>({...x,value:x.value+(Number(b[BASELINE_MAP[x.name]])||0)}))}
-function baselineInput(name,label,val){return `<div class="field"><label>${esc(label)}</label><input name="${esc(name)}" inputmode="numeric" placeholder="0000:00" value="${esc(fmt(Number(val)||0))}" data-hour-baseline="1"><small>HH:MM — previous logbook hours</small></div>`}
+function baselineInput(name,label,val){return `<div class="field"><label>${esc(label)}</label><input name="${esc(name)}" inputmode="numeric" placeholder="4222:05" value="${esc(fmt(Number(val)||0))}" data-hour-baseline="1"><small>HH:MM — press Space to insert : (e.g. 4222:05)</small></div>`}
 function saveOpeningHours(){
  const p=getPilot(state.editing),form=$('#openingHoursForm');if(!p||!form)return;
  const d=readForm(form),b={};for(const [key] of BASELINE_FIELDS){const v=parseTime(d[key]||'00:00');if(v===null||!Number.isFinite(v)||v<0){notify('Invalid HH:MM for '+key,true);return}b[key]=v}
@@ -625,8 +625,31 @@ function formatHourEntry(input,finalize=false){
 }
 function updateChiefSignaturePreview(){const input=document.querySelector('[data-chief-url]'),target=document.getElementById('chiefSignaturePreview');if(!input||!target)return;const src=driveImageUrl(input.value);target.innerHTML=src?`<img src="${esc(src)}" alt="Signature preview" referrerpolicy="no-referrer" onerror="this.hidden=true;this.nextElementSibling.hidden=false"><small hidden>Image could not be loaded. Check file sharing.</small>`:'<small>Enter a Google Drive image URL to preview.</small>';}
 document.addEventListener('input',e=>{if(e.target.matches('[data-chief-url]'))updateChiefSignaturePreview()});
-document.addEventListener('input',e=>{if(e.target.matches('input.flight-hours, input[data-hour-baseline]')){formatHourEntry(e.target);if(e.target.matches('input.flight-hours'))syncRatingHours(e.target.closest('form'))}});
-document.addEventListener('focusout',e=>{if(e.target.matches('input.flight-hours, input[data-hour-baseline]'))formatHourEntry(e.target,true)});
+// Historical opening balances allow thousands of hours. Space inserts the HH:MM separator.
+function formatHistoricalHour(input,finalize=false){
+ const value=input.value;
+ const hasColon=value.includes(':');
+ let hours='',minutes='';
+ if(hasColon){const parts=value.split(':');hours=parts[0].replace(/\D/g,'').slice(0,7);minutes=parts.slice(1).join('').replace(/\D/g,'').slice(0,2)}
+ else {const digits=value.replace(/\D/g,'').slice(0,9);if(digits.length>=6){hours=digits.slice(0,-2);minutes=digits.slice(-2)}else{hours=digits}}
+ if(finalize&&hours){hours=hours.padStart(2,'0');minutes=minutes.padEnd(2,'0')||'00'}
+ input.value=hours+(hasColon||minutes||finalize&&hours?':'+minutes:'');
+ input.setCustomValidity(minutes&&Number(minutes)>59?'Minutes must be between 00 and 59.':'');
+}
+document.addEventListener('keydown',e=>{
+ if(!e.target.matches('input[data-hour-baseline]')||e.key!==' '||e.ctrlKey||e.altKey||e.metaKey)return;
+ e.preventDefault();const input=e.target;
+ const pos=input.selectionStart??input.value.length;
+ if(input.value.includes(':'))return;
+ const hours=input.value.slice(0,pos).replace(/\D/g,'');
+ const after=input.value.slice(pos).replace(/\D/g,'');
+ if(!hours)return;
+ input.value=hours+':'+after.slice(0,2);
+ input.setSelectionRange(hours.length+1,hours.length+1);
+ input.setCustomValidity('');
+});
+document.addEventListener('input',e=>{if(e.target.matches('input.flight-hours')){formatHourEntry(e.target);syncRatingHours(e.target.closest('form'))}else if(e.target.matches('input[data-hour-baseline]'))formatHistoricalHour(e.target)});
+document.addEventListener('focusout',e=>{if(e.target.matches('input.flight-hours'))formatHourEntry(e.target,true);else if(e.target.matches('input[data-hour-baseline]'))formatHistoricalHour(e.target,true)});
 document.addEventListener('input',e=>{if(e.target.id==='logSearch'){state.query=e.target.value;const pos=e.target.selectionStart;$('#view-logbook').innerHTML=logbook();let inp=$('#logSearch');inp.focus();inp.setSelectionRange(pos,pos)}});
 document.addEventListener('change',e=>{let map={filterFleet:'aircraft',filterDuty:'duty',filterFrom:'from',filterTo:'to',reportFrom:'reportFrom',reportTo:'reportTo'};if(map[e.target.id]){state[map[e.target.id]]=e.target.value;render()}});
 
