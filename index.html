@@ -450,7 +450,7 @@ function statBox(label,value,caption,iconName,variant=''){return `<div class="st
 function overview(){let rows=filteredBase(),m=summary(rows);m.total+=Number(activeBaseline().total)||0;m.pic=rows.reduce((n,f)=>n+roleFlightMinutes(f,'pic'),0)+(Number(activeBaseline().pic)||0);m.sic=rows.reduce((n,f)=>n+roleFlightMinutes(f,'sic'),0)+(Number(activeBaseline().sic)||0);let recent=rows.filter(f=>{const t=new Date(f.date+'T12:00:00Z').getTime(),today=Date.now();return t<=today&&t>=today-30*864e5}).length;
 let months=[];for(let i=5;i>=0;i--){let d=new Date();d.setUTCDate(1);d.setUTCMonth(d.getUTCMonth()-i);let key=d.toISOString().slice(0,7);months.push({name:monthShort(key+'-01'),value:rows.filter(f=>f.date.startsWith(key)).reduce((a,f)=>a+f.duration,0)})}let max=Math.max(60,...months.map(x=>x.value));let astats=db.fleet.map(a=>({...a,value:rows.filter(f=>f.aircraftId===a.id).reduce((n,f)=>n+f.duration,0)})).sort((a,b)=>b.value-a.value);astats=astats.filter(x=>x.value>0);let totalF=astats.reduce((a,x)=>a+x.value,0);
 let recentRows=[...rows].sort((a,b)=>b.date.localeCompare(a.date)||b.createdAt.localeCompare(a.createdAt)).slice(0,6);
-return header('Flight Operations Dashboard',`Pilot flying hours and recent activities · ${esc(scopeName())}`,`<button class="btn" data-act="sharePilotPdf">${ic('print')} Download PDF</button><button class="btn" data-act="sharePilotExcel">${ic('down')} Share Excel</button> ${exportBtn} ${addBtn}`)+`<div class="stats-grid">${statBox('TOTAL FLIGHT TIME',`${fmt(m.total)} <span class="stat-unit">HRS</span>`,'Sum of logged pilot-hours','clock')}${statBox('PILOT IN COMMAND',`${fmt(m.pic)} <span class="stat-unit">HRS</span>`,'Entries logged with PIC duty','badge','green')}${statBox('SECOND IN COMMAND',`${fmt(m.sic)} <span class="stat-unit">HRS</span>`,'Entries logged with SIC duty','plane','gold')}${statBox('FLIGHT ENTRIES',m.flights,`${recent} entries within last 30 days`,'book','purple')}</div>
+return header('Flight Operations Dashboard',`Pilot flying hours and recent activities · ${esc(scopeName())}`,`<button class="btn" data-act="sharePilotPdf">${ic('print')} Share PDF</button><button class="btn" data-act="sharePilotExcel">${ic('down')} Share Excel</button> ${exportBtn} ${addBtn}`)+`<div class="stats-grid">${statBox('TOTAL FLIGHT TIME',`${fmt(m.total)} <span class="stat-unit">HRS</span>`,'Sum of logged pilot-hours','clock')}${statBox('PILOT IN COMMAND',`${fmt(m.pic)} <span class="stat-unit">HRS</span>`,'Entries logged with PIC duty','badge','green')}${statBox('SECOND IN COMMAND',`${fmt(m.sic)} <span class="stat-unit">HRS</span>`,'Entries logged with SIC duty','plane','gold')}${statBox('FLIGHT ENTRIES',m.flights,`${recent} entries within last 30 days`,'book','purple')}</div>
 ${pilotHourCards(rows)}<div class="panel-grid"><section class="panel"><div class="panel-head"><div><h2>Flight Time Activity</h2><p>Monthly logged pilot-hours · last 6 months</p></div><span class="mini-caption">HH:MM</span></div><div class="chart-container"><div class="chart">${months.map(x=>`<div class="chart-col"><span class="chart-tip">${x.value?fmt(x.value):''}</span><div class="chart-bar" style="height:${Math.max(1,x.value/max*88)}%"></div><div class="chart-label">${x.name}</div></div>`).join('')}</div></div></section>
 <section class="panel"><div class="panel-head"><div><h2>Flight Hours by Aircraft</h2><p>Type allocation across ${m.flights} logbook entries</p></div>${ic('plane')}</div><div class="aircraft-list">${astats.length?astats.map(x=>`<div><div class="aircraft-row-top"><b>${esc(x.type)}</b><span>${fmt(x.value)} hrs</span></div><div class="progress"><div class="progress-fill" style="width:${totalF?x.value/totalF*100:0}%"></div></div></div>`).join(''):'<p class="info-note">No aircraft type rating hours recorded yet.</p>'}</div></section></div>
 <section class="panel records-panel"><div class="records-head"><h2>Recent Flight Entries</h2><a href="#logbook" data-view="logbook">View all records →</a></div>${recentRows.length?flightTable(recentRows,true):empty('No flights recorded yet','Create your first flight to start building the logbook.','Add your first flight','newFlight')}</section>`}
@@ -570,7 +570,7 @@ if(type==='flightDetail'){
  ${single('IFR','ifr')}
 </div>`;
  footer=`${cancel}<button class="btn" data-act="copyFlight" data-id="${esc(id)}">${ic('copy')} Copy</button><button class="btn" data-act="deleteFlight" data-id="${esc(id)}">${ic('trash')} Delete</button><button class="btn btn-primary" data-act="editFlight" data-id="${esc(id)}">${ic('edit')} Edit</button>`;
- }else if(type==='flight'){let f=db.flights.find(x=>x.id===id)||{};title=isEdit?'Edit Flight Record':'Add New Flight';sub='Enter flight hours by PIC/SIC capacity in HH:MM';let today=new Date().toLocaleDateString('en-CA');
+ }else if(type==='flight'){let f=db.flights.find(x=>x.id===id)||(state.copyDraft||{});title=isEdit?'Edit Flight Record':(state.copyDraft?'Copy Flight Record':'Add New Flight');sub='Enter flight hours by PIC/SIC capacity in HH:MM';let today=new Date().toLocaleDateString('en-CA');
 body=`${!isEdit?`<div class="notice" style="margin-bottom:14px;display:flex;gap:12px;align-items:center;flex-wrap:wrap"><div><strong>Auto-fill from Pilot Logbook PDF / Excel</strong><div style="font-size:12px">Upload the supplied PDF LOG BOOK DETAIL or RAMDAN.xlsx format. Review all extracted records before saving.</div></div><button type="button" class="btn btn-primary" data-act="uploadFlightPdf">${ic('upload')} Upload PDF</button><button type="button" class="btn btn-primary" data-act="uploadFlightExcel">${ic('upload')} Upload Excel</button></div>`:''}<form id="recordForm"><div class="form-grid"><div class="field"><label for="f_date">Flight Date *</label><input id="f_date" name="date" type="date" required value="${esc(f.date||today)}"></div><div class="field"><label for="f_pilot">Pilot Logbook *</label><select id="f_pilot" name="pilotId" required>${pilotOptions(f.pilotId|| (db.activePilotId==='all'?db.pilots[0]?.id:db.activePilotId))}</select></div><div class="field"><label>Aircraft *</label><select name="aircraftId" required>${fleetOptions(f.aircraftId||db.fleet[0]?.id)}<option value="__manual__">+ Enter aircraft manually...</option></select><input name="manualAircraft" style="display:none;margin-top:7px" placeholder="PK CAO / BE300" autocomplete="off"><small>Manual aircraft is added to the directory on Save. Type PK then Space to insert a hyphen.</small></div><div class="field"><label>Duty / Capacity *</label><select name="role" id="dutyCapacitySelect" required>${dutyOptions(f.role||'PIC')}</select></div><div class="field"><label>Departure (ICAO / Landing Site) *</label><input name="origin" data-location-format="true" required maxlength="50" placeholder="e.g. WIHH" value="${esc(f.origin||'')}"></div><div class="field"><label>Arrival (ICAO / Landing Site) *</label><input name="destination" data-location-format="true" required maxlength="50" placeholder="e.g. WICC" value="${esc(f.destination||'')}"></div></div>
 <div id="flightHoursSection">${aircraftHoursSection(f,getAircraft(f.aircraftId||db.fleet[0]?.id))}</div>
 <div class="form-section"><strong>Additional Flight Information</strong><small>HH:MM</small></div><div class="form-grid"><div class="field"><label>IFR Time (HH:MM)</label><input name="ifrText" placeholder="00:00" value="${f.ifr!=null?fmt(f.ifr):''}"></div></div>
@@ -603,7 +603,7 @@ footer=`${cancel}<button class="btn btn-primary" type="submit" form="recordForm"
 }else if(type==='import'){title='Import Flight Records';sub='CSV import or JSON backup restore';body=`<div class="notice">${ic('info')}<div>Use a CSV file previously exported from this application, or restore a JSON backup. A CSV import appends records and skips matching IDs. A JSON restore replaces the entire data set after confirmation.</div></div><p class="info-note">For CSV, make sure pilot names and aircraft registrations exist in the directories. Unknown pilots/registrations will be skipped with a reported count.</p><button class="btn" data-act="template">${ic('down')} Download CSV Template</button>`;footer=`${cancel}<button class="btn btn-primary" data-act="selectFile">${ic('upload')} Choose CSV / JSON File</button>`;
 }
 $('#modalTitle').textContent=title;$('#modalSub').textContent=sub;$('#modalBody').innerHTML=body;$('#modalFoot').innerHTML=footer;$('#modal').classList.toggle('narrow',type!=='flight');$('#modalWrap').classList.add('show');if(type==='flight')syncDutyHours();if(type==='chiefPilot')updateChiefSignaturePreview();document.body.style.overflow='hidden';if(type==='flight'){const f=$('#recordForm');f.elements.aircraftId.addEventListener('change',()=>{syncManualAircraft(f);syncAircraftHours(f)});f.elements.manualAircraft.addEventListener('input',e=>{if(/\s$/.test(e.target.value)&&/^PK\s$/i.test(e.target.value))e.target.value='PK-';});syncManualAircraft(f)}}
-function closeModal(){state.modalType=null;state.editing=null;$('#modalWrap').classList.remove('show');document.body.style.overflow=''}
+function closeModal(){state.copyDraft=null;state.modalType=null;state.editing=null;$('#modalWrap').classList.remove('show');document.body.style.overflow=''}
 const CREW_CHOICES=['Self','Tobing','Setyo','Purwoko','Marcel','Teddy','Ramdan','Eli','Alfajri','Sofwan','Rico','Riza','Wawan','Aldy','Berli'];
 function crewField(name,label,value=''){
  const known=CREW_CHOICES.includes(value);
@@ -676,8 +676,8 @@ async function shareDashboardReport(format){
    download(filename,blob,blob.type);notify('Excel report downloaded.');return;
   }
   await dashboardScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js',()=>!!window.jspdf?.jsPDF);
-  // Fixed A4 pages. Keep each pilot block together whenever it fits;
-  // exceptionally long type-rating tables continue on the next A4 page with a repeated header.
+  // One PDF page for the entire selected pilot population; dynamically size the page
+  // instead of silently clipping content or spilling onto a second page.
   const preferred=['Total Flight Hours','Total PIC','Total SIC','Day Flight','Night Flight','Simulator','Flight Instructor','CCP','Offshore · Helicopter','Mountainous · Helicopter','External Load · Helicopter'];
   const optional=new Set(['Flight Instructor','CCP','Offshore · Helicopter','Mountainous · Helicopter','External Load · Helicopter']);
   const shortName={'Offshore · Helicopter':'Offshore','Mountainous · Helicopter':'Mountainous','External Load · Helicopter':'External Load'};
@@ -686,92 +686,73 @@ async function shareDashboardReport(format){
    metrics:preferred.map(name=>d.metrics.find(m=>m.name===name)).filter(m=>m&&(!optional.has(m.name)||Number(m.value)>0)),
    ratings:Object.entries(d.types).filter(([name,v])=>name&&v.pic+v.sic+v.manual>0).sort((a,b)=>a[0].localeCompare(b[0]))
   }));
-  const pdf=new window.jspdf.jsPDF({orientation:'portrait',unit:'mm',format:'a4',compress:true});
-  const pw=210,ph=297,margin=13,contentW=pw-2*margin,bottom=ph-14;
-  const dark=[23,43,77],muted=[105,119,142],pale=[245,248,253],border=[217,226,239];
+  const margin=12, gap=6, blockW=132, colCount=blocks.length===1?1:2;
+  const rowHeights=[];
+  for(let i=0;i<blocks.length;i+=colCount){
+   const row=blocks.slice(i,i+colCount);
+   rowHeights.push(Math.max(...row.map(b=>18+Math.ceil(b.metrics.length/2)*14+11+Math.max(1,b.ratings.length)*7+7)));
+  }
+  const contentH=rowHeights.reduce((a,v)=>a+v,0)+Math.max(0,rowHeights.length-1)*gap;
+  const pw=margin*2+colCount*blockW+(colCount-1)*gap;
+  const ph=Math.max(210,44+contentH+margin);
+  const pdf=new window.jspdf.jsPDF({orientation:pw>=ph?'landscape':'portrait',unit:'mm',format:[pw,ph],compress:true});
+  const dark=[23,43,77], muted=[105,119,142], pale=[245,248,253], border=[217,226,239];
   const clean=t=>String(t??'').replace(/[\u00b7\u2013\u2014]/g,'-');
   const write=(t,x,y,size=9,color=dark,weight='normal',options)=>{pdf.setFont('helvetica',weight);pdf.setFontSize(size);pdf.setTextColor(...color);pdf.text(clean(t),x,y,options||{})};
-  let y=0,pageNo=0;
-  function newPage(){
-   if(pageNo++)pdf.addPage('a4','portrait');
-   pdf.setFillColor(...dark);pdf.rect(0,0,pw,8,'F');
-   write('PT TRANSWISATA PRIMA AVIATION',margin,17,9,dark,'bold');
-   write('PILOT FLIGHT HOURS SUMMARY',margin,24,13,dark,'bold');
-   write('Generated '+new Date().toLocaleString('en-GB')+'  |  '+blocks.length+' pilot(s)',margin,30,7.5,muted);
-   pdf.setDrawColor(...border);pdf.line(margin,34,pw-margin,34);
-   y=40;
-  }
-  function pilotHeading(b,continued=false){
-   const p=b.pilot;
-   const pilotLabel=[p.rank&&String(p.name||'').toLowerCase().startsWith(String(p.rank).toLowerCase())?'':p.rank,p.name].filter(Boolean).join(' ').trim();
-   const identity=pilotLabel+(p.license?' / '+p.license:'')+(continued?' (continued)':'');
-   const lines=pdf.splitTextToSize(clean(identity),contentW-9);
-   const h=Math.max(13,6+lines.length*5);
-   pdf.setFillColor(...pale);pdf.setDrawColor(...border);pdf.roundedRect(margin,y,contentW,h,2,2,'FD');
-   lines.forEach((line,i)=>write(line,margin+4,y+6+i*5,i?8:10,i?muted:dark,i?'normal':'bold'));
-   y+=h+4;
-  }
-  function metricsSection(b){
-   const cw=(contentW-4)/2;
-   for(let k=0;k<b.metrics.length;k+=2){
-    for(let j=0;j<2&&k+j<b.metrics.length;j++){
-     const m=b.metrics[k+j],xx=margin+j*(cw+4);
-     pdf.setFillColor(255,255,255);pdf.setDrawColor(...border);pdf.roundedRect(xx,y,cw,12,1.5,1.5,'FD');
-     write(shortName[m.name]||m.name,xx+3,y+4.5,7,muted,'bold');
-     write(fmt(m.value),xx+3,y+10,10,dark,'bold');
+  pdf.setFillColor(...dark);pdf.rect(0,0,pw,9,'F');
+  write('PT TRANSWISATA PRIMA AVIATION',margin,18,10,dark,'bold');
+  write('PILOT FLIGHT HOURS SUMMARY',margin,25,14,dark,'bold');
+  write('Generated '+new Date().toLocaleString('en-GB')+'  |  '+blocks.length+' pilot(s)',margin,31,8,muted);
+  pdf.setDrawColor(...border);pdf.line(margin,35,pw-margin,35);
+  let y=40;
+  for(let r=0;r<rowHeights.length;r++){
+   for(let c=0;c<colCount;c++){
+    const b=blocks[r*colCount+c];if(!b)continue;
+    const x=margin+c*(blockW+gap), right=x+blockW;
+    const p=b.pilot;
+    const pilotLabel=[p.rank&&String(p.name||'').toLowerCase().startsWith(String(p.rank).toLowerCase())?'':p.rank,p.name].filter(Boolean).join(' ').trim();
+    const identity=pilotLabel+(p.license?' / '+p.license:'');
+    pdf.setFillColor(...pale);pdf.setDrawColor(...border);pdf.roundedRect(x,y,blockW,14,2,2,'FD');
+    pdf.setFont('helvetica','bold');pdf.setFontSize(10);
+    const idLines=pdf.splitTextToSize(clean(identity),blockW-8);
+    write(idLines[0]||'Pilot',x+4,y+6,10,dark,'bold');
+    if(idLines.length>1)write(idLines.slice(1).join(' ').slice(0,100),x+4,y+11,7,muted);
+    let cy=y+18;const cw=(blockW-3)/2;
+    for(let k=0;k<b.metrics.length;k+=2){
+     for(let j=0;j<2&&k+j<b.metrics.length;j++){
+      const m=b.metrics[k+j],xx=x+j*(cw+3);
+      pdf.setFillColor(255,255,255);pdf.setDrawColor(...border);pdf.roundedRect(xx,cy,cw,12,1.6,1.6,'FD');
+      write(shortName[m.name]||m.name,xx+3,cy+4.5,7,muted,'bold');
+      write(fmt(m.value),xx+3,cy+10,10,dark,'bold');
+     }
+     cy+=14;
     }
-    y+=14;
+    cy+=2;write('TYPE RATING HOURS',x,cy+4,9,dark,'bold');cy+=7;
+    pdf.setFillColor(...dark);pdf.rect(x,cy,blockW,6,'F');
+    write('AIRCRAFT TYPE',x+3,cy+4.2,7,[255,255,255],'bold');
+    write('TOTAL',right-3,cy+4.2,7,[255,255,255],'bold',{align:'right'});cy+=6;
+    if(!b.ratings.length){write('No type rating hours recorded',x+3,cy+5,8,muted);cy+=7;}
+    for(let k=0;k<b.ratings.length;k++){
+     const [type,v]=b.ratings[k];
+     if(k%2===0){pdf.setFillColor(...pale);pdf.rect(x,cy,blockW,7,'F');}
+     const label=clean(type)+(v.manual>0&&v.pic+v.sic===0?' (Historical)':'');
+     pdf.setFont('helvetica','normal');pdf.setFontSize(8);
+     const maxW=blockW-31;
+     let shown=label;
+     while(shown.length>1&&pdf.getTextWidth(shown)>maxW)shown=shown.slice(0,-1);
+     if(shown!==label)shown=shown.slice(0,-2)+'..';
+     write(shown,x+3,cy+4.9,8,dark);
+     write(fmt(v.pic+v.sic+v.manual),right-3,cy+4.9,8,dark,'bold',{align:'right'});
+     cy+=7;
+    }
+    pdf.setDrawColor(...border);pdf.line(x,cy+2,right,cy+2);
    }
-   y+=3;
+   y+=rowHeights[r]+gap;
   }
-  function ratingHeader(){
-   write('TYPE RATING HOURS',margin,y+4,9,dark,'bold');y+=7;
-   pdf.setFillColor(...dark);pdf.rect(margin,y,contentW,7,'F');
-   write('AIRCRAFT TYPE',margin+3,y+4.8,7.5,[255,255,255],'bold');
-   write('TOTAL',pw-margin-3,y+4.8,7.5,[255,255,255],'bold',{align:'right'});
-   y+=7;
-  }
-  function ratingRow(type,v,index){
-   if(index%2===0){pdf.setFillColor(...pale);pdf.rect(margin,y,contentW,7,'F')}
-   const label=clean(type)+(v.manual>0&&v.pic+v.sic===0?' (Historical)':'');
-   pdf.setFont('helvetica','normal');pdf.setFontSize(8);
-   const lines=pdf.splitTextToSize(label,contentW-35);
-   // One complete type-rating row is never split across pages.
-   const rh=Math.max(7,lines.length*4.2+2);
-   if(y+rh+3>bottom){newPage();pilotHeading(currentBlock,true);ratingHeader()}
-   if(index%2===0){pdf.setFillColor(...pale);pdf.rect(margin,y,contentW,rh,'F')}
-   lines.forEach((line,i)=>write(line,margin+3,y+5+i*4.2,8,dark));
-   write(fmt(v.pic+v.sic+v.manual),pw-margin-3,y+5,8,dark,'bold',{align:'right'});
-   y+=rh;
-  }
-  newPage();
-  let currentBlock=null;
-  for(const b of blocks){
-   currentBlock=b;
-   const p=b.pilot;
-   const pilotLabel=[p.rank&&String(p.name||'').toLowerCase().startsWith(String(p.rank).toLowerCase())?'':p.rank,p.name].filter(Boolean).join(' ').trim();
-   const idLines=pdf.splitTextToSize(clean(pilotLabel+(p.license?' / '+p.license:'')),contentW-9);
-   const headH=Math.max(13,6+idLines.length*5)+4;
-   const metricsH=Math.ceil(b.metrics.length/2)*14+3;
-   const ratingH=14+(b.ratings.length?b.ratings.reduce((sum,[type,v])=>{
-    const label=clean(type)+(v.manual>0&&v.pic+v.sic===0?' (Historical)':'');
-    pdf.setFont('helvetica','normal');pdf.setFontSize(8);
-    return sum+Math.max(7,pdf.splitTextToSize(label,contentW-35).length*4.2+2);
-   },0):7);
-   const totalH=headH+metricsH+ratingH+7;
-   if(y+totalH>bottom&&y>40)newPage();
-   pilotHeading(b);
-   metricsSection(b);
-   if(y+14>bottom){newPage();pilotHeading(b,true)}
-   ratingHeader();
-   if(!b.ratings.length){write('No type rating hours recorded',margin+3,y+5,8,muted);y+=7}
-   for(let i=0;i<b.ratings.length;i++)ratingRow(b.ratings[i][0],b.ratings[i][1],i);
-   pdf.setDrawColor(...border);pdf.line(margin,y+2,pw-margin,y+2);y+=9;
-  }
-  for(let n=1;n<=pdf.getNumberOfPages();n++){
-   pdf.setPage(n);write('Page '+n+' of '+pdf.getNumberOfPages(),pw-margin,ph-7,7,muted,'normal',{align:'right'});
-  }
+  // A single page only; no addPage calls in this export path.
   const filename=`Transwisata_Pilot_Hours_${scope}_${date}.pdf`;
+  const blob=pdf.output('blob');
+  if(navigator.canShare&&navigator.share&&navigator.canShare({files:[new File([blob],filename,{type:'application/pdf'})]})){try{await navigator.share({files:[new File([blob],filename,{type:'application/pdf'})],title});return}catch(e){if(e.name==='AbortError')return}}
   pdf.save(filename);notify('PDF report downloaded.');
  }catch(e){notify('Report export failed: '+e.message,true);console.error(e)}
 }
@@ -783,8 +764,10 @@ function demoRecords(){const pilots=db.pilots.slice(0,Math.min(5,db.pilots.lengt
 function copyFlight(id){
  const f=db.flights.find(x=>x.id===id);if(!f)return;
  if(personalMode&&f.pilotId!==personalPilotId)return;
- const clone={...f,id:uid('fl'),demo:false};
- db.flights.push(clone);persist();closeModal();render();notify('Flight record duplicated. Open the new entry to edit it.');
+ // Prepare an unsaved copy: no new flight is written until Save Flight Entry.
+ state.copyDraft={...f,id:null,demo:false};
+ openModal('flight');
+ notify('Copied flight details loaded. Edit and save to create a new record.');
 }
 function bulkFlightDelete(mode){
  const visible=logRows();
