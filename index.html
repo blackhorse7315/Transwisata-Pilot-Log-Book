@@ -72,6 +72,20 @@ const loginEmailDomain='pilot.transwisata-apps.invalid';
 function usernameEmail(username){return username.toLowerCase()+'@'+loginEmailDomain;}
 // Offline persistence is deliberately not enabled; Firestore is the sole data source.
 let cloudUser=null,cloudProfile=null,cloudReady=false,cloudSaving=false,cloudQueue=Promise.resolve();
+let realtimeUnsubscribe=null,realtimeRefreshPending=false;
+function stopRealtime(){if(realtimeUnsubscribe){realtimeUnsubscribe();realtimeUnsubscribe=null}}
+function startRealtime(){
+ stopRealtime();if(!cloudUser||!cloudProfile)return;
+ const ref=cloudProfile.role==='admin'?fbDb.collection('logbookPilots'):fbDb.doc('logbookPilots/'+cloudProfile.pilotId);
+ let first=true;
+ realtimeUnsubscribe=ref.onSnapshot(()=>{
+  if(first){first=false;return}
+  if(!cloudReady||realtimeRefreshPending)return;
+  realtimeRefreshPending=true;
+  cloudQueue.catch(()=>{}).then(async()=>{if(cloudReady&&!document.getElementById('openingHoursForm'))await cloudLoad(false)}).catch(e=>console.warn('Realtime refresh:',e)).finally(()=>{realtimeRefreshPending=false});
+ },e=>console.warn('Realtime listener:',e));
+}
+
 const cloudMeta=()=>({updatedAt:firebase.firestore.FieldValue.serverTimestamp(),updatedBy:cloudUser?.uid||null});
 function showLogin(message='Sign in to access your Transwisata Logbook.'){
  document.getElementById('cloudGate').style.display='flex';
@@ -86,7 +100,7 @@ async function logoutCloud(){
  const buttons=[document.getElementById('sidebarLogout'),document.getElementById('topLogout')];
  buttons.forEach(b=>{if(b)b.disabled=true});
  try{
-  await fbAuth.signOut();
+  stopRealtime();await fbAuth.signOut();
   cloudUser=null;cloudProfile=null;cloudReady=false;
   document.getElementById('cloudPassword').value='';
   document.querySelectorAll('.view').forEach(v=>{v.innerHTML='';v.hidden=true});
@@ -190,9 +204,9 @@ function showSyncError(message){
  }
  document.getElementById('firebaseStatusTitle').textContent='Firebase · Sync error';box.textContent='Firebase sync failed: '+message+' — changes may not be saved. Reload only after resolving this issue.';
 }
-async function cloudLoad(){
+async function cloudLoad(subscribe=true){
  const role=cloudProfile.role;
- let loaded={version:VERSION,pilots:[],flights:[],fleet:[],activePilotId:'all',demo:false};
+ let loaded={version:VERSION,pilots:[],flights:[],fleet:[],activePilotId:db?.activePilotId||'all',demo:false};
  if(role==='admin'){
   const [config,pilotsSnap]=await Promise.all([
    fbDb.doc('logbook/config').get({source:'server'}),
@@ -234,11 +248,12 @@ async function cloudLoad(){
  cloudReady=true;
  hideLogin();
  render();
+ if(subscribe)startRealtime();
  notify('Loaded from Firebase Cloud Firestore');
 }
 fbAuth.onAuthStateChanged(async user=>{
  cloudReady=false;
- if(!user){cloudUser=null;cloudProfile=null;showLogin('Enter your username and password assigned by Admin.');return}
+ if(!user){stopRealtime();cloudUser=null;cloudProfile=null;showLogin('Enter your username and password assigned by Admin.');return}
  cloudUser=user;
  showLogin('Checking Firebase access permissions...');
  try{
@@ -357,26 +372,58 @@ function pilotBaseline(id){return getPilot(id)?.openingHours||{}}
 function activeBaseline(){return db.activePilotId==='all'?{}:pilotBaseline(db.activePilotId)}
 function addBaselineToItems(items,id){const b=pilotBaseline(id);return items.map(x=>({...x,value:x.value+(Number(b[BASELINE_MAP[x.name]])||0)}))}
 function baselineInput(name,label,val){return `<div class="field"><label>${esc(label)}</label><input name="${esc(name)}" inputmode="numeric" placeholder="4222:05" value="${esc(fmt(Number(val)||0))}" data-hour-baseline="1"><small>HH:MM — press Space to insert : (e.g. 4222:05)</small></div>`}
-async function saveOpeningHours(){
+function historicalLogged(pilotId,key,aircraftId,role){
+ const rows=db.flights.filter(f=>f.pilotId===pilotId);
+ if(aircraftId)return rows.filter(f=>f.aircraftId===aircraftId).reduce((n,f)=>n+(Number(role==='pic'?(f.ratingPic??((f.dayPic||0)+(f.nightPic||0))):(f.ratingSic??((f.daySic||0)+(f.nightSic||0))))||0),0);
+ const item=specializedSummary(rows).find(x=>BASELINE_MAP[x.name]===key);
+ if(item)return Number(item.value)||0;
+ if(key==='external')return rows.reduce((n,f)=>n+(Number(f.externalPic)||0)+(Number(f.externalSic)||0),0);
+ return 0;
+}
+function historicalCorrectionInput(name,label,initial,logged,correction,editableInitial=false){
+ const actual=initial+correction+logged;
+ return `<div class="field" style="border:1px solid var(--border,#ddd);border-radius:10px;padding:12px"><label style="font-weight:700">${esc(label)}</label>
+ <label style="font-size:11px">Existing Historical Hours (original)</label><input name="initial_${esc(name)}" value="${esc(fmt(initial))}" data-hour-baseline="1" ${editableInitial?'':'readonly'} style="background:var(--surface,#f5f5f5)">
+ <label style="font-size:11px;margin-top:8px">Logged Flights (automatic)</label><input value="${esc(fmt(logged))}" readonly style="background:var(--surface,#f5f5f5)">
+ <label style="font-size:11px;margin-top:8px">Correct Total Flight Hours (target)</label><input name="target_${esc(name)}" value="${esc(fmt(actual))}" data-hour-baseline="1" inputmode="numeric" placeholder="4222:05">
+ <small>Adjustment: <strong data-adjust="${esc(name)}">${esc((correction<0?'-':'+')+fmt(Math.abs(correction)))}</strong> · Target − Existing − Logged Flights</small></div>`;
+}
+function saveOpeningHours(){
  const p=getPilot(state.editing),form=$('#openingHoursForm');if(!p||!form)return;
- // Finalize all inputs before FormData reads their values.
- form.querySelectorAll('input[data-hour-baseline]').forEach(el=>formatHistoricalHour(el,true));
- const d=readForm(form),b={};
- for(const [key] of BASELINE_FIELDS){const v=parseTime(d[key]||'00:00');if(v===null||!Number.isFinite(v)||v<0){notify('Invalid HH:MM for '+key,true);return}b[key]=v}
+ const d=readForm(form),old=p.openingHours||{},initial={...(old.initial||{})},adjustments={},b={};
+ const first=!old.initial;
+ for(const [key] of BASELINE_FIELDS){
+  const rawInitial=first?d['initial_'+key]:fmt(Number(initial[key])||0);
+  const i=parseTime(rawInitial),target=parseTime(d['target_'+key]);
+  if(!Number.isFinite(i)||i<0||!Number.isFinite(target)||target<0){notify('Invalid HH:MM for '+key,true);return}
+  initial[key]=i;const logged=historicalLogged(p.id,key);
+  adjustments[key]=target-i-logged;b[key]=i+adjustments[key];
+  if(b[key]<0){notify('Target is below already logged flights for '+key,true);return}
+ }
  if(b.day+b.night>b.total){notify('Historical Day + Night cannot exceed Total Flight Hours.',true);return}
- const types={};for(const a of db.fleet){const k=a.id,pic=parseTime(d['ratingPic_'+k]||'00:00'),sic=parseTime(d['ratingSic_'+k]||'00:00');if(!Number.isFinite(pic)||!Number.isFinite(sic)||pic<0||sic<0){notify('Invalid type rating hours.',true);return}if(pic||sic)types[k]={pic,sic}}
- const updated={...p,openingHours:{...b,types,asOf:d.asOf||'',source:(d.source||'').trim()}};
- if(!cloudReady||cloudProfile?.role!=='admin'){notify('Only a connected Admin can save Historical Flight Hours.',true);return}
- const saveBtn=document.querySelector('button[form="openingHoursForm"]');if(saveBtn){saveBtn.disabled=true;saveBtn.textContent='Saving to Firebase...'}
- try{
-  // Serialize with pending writes, and only report success after Firestore confirms.
-  const snapshot=JSON.parse(JSON.stringify({...db,pilots:db.pilots.map(x=>x.id===p.id?updated:x),missions:missionList,duties:dutyList,chiefPilots}));
-  const task=cloudQueue.then(()=>cloudSave(snapshot));cloudQueue=task.catch(()=>{});
-  await task;
-  Object.assign(p,updated);
-  closeModal();render();notify('Historical opening balances saved to Firebase for '+p.name);
- }catch(e){console.error('Historical save failed:',e);notify('Historical hours NOT saved: '+e.message,true);showSyncError(e.message)}
- finally{if(saveBtn){saveBtn.disabled=false;saveBtn.textContent='Save Opening Balances'}}
+ const types={},initialTypes={...(old.initialTypes||{})},typeAdjustments={};
+ for(const a of db.fleet){
+  const k=a.id;initialTypes[k]={...(initialTypes[k]||{})};typeAdjustments[k]={};types[k]={};
+  for(const role of ['pic','sic']){
+   const field='rating'+(role==='pic'?'Pic_':'Sic_')+k;
+   const i=parseTime(first?d['initial_'+field]:fmt(Number(initialTypes[k][role])||0));
+   const target=parseTime(d['target_'+field]);
+   if(!Number.isFinite(i)||i<0||!Number.isFinite(target)||target<0){notify('Invalid type rating hours.',true);return}
+   initialTypes[k][role]=i;const logged=historicalLogged(p.id,null,k,role);
+   typeAdjustments[k][role]=target-i-logged;types[k][role]=i+typeAdjustments[k][role];
+   if(types[k][role]<0){notify('Type rating target below logged flight hours.',true);return}
+  }
+ }
+ const previousOpeningHours=p.openingHours;
+ p.openingHours={...b,types,initial,adjustments,initialTypes,typeAdjustments,asOf:d.asOf||'',source:(d.source||'').trim()};
+ // Save the effective opening balances. The original initial values never change on subsequent edits.
+ const btn=form.querySelector('[type=submit]');if(btn)btn.disabled=true;
+ const snapshot=JSON.parse(JSON.stringify({...db,missions:missionList,duties:dutyList,chiefPilots}));
+ cloudQueue=cloudQueue.catch(()=>{}).then(async()=>{
+  if(cloudProfile?.role!=='admin')throw Error('Admin authorization required');
+  await fbDb.doc('logbookPilots/'+p.id).update({'profile.openingHours':p.openingHours,...cloudMeta()});
+ });
+ cloudQueue.then(async()=>{await cloudLoad();closeModal();render();notify('Historical corrections saved and reloaded from Firebase. Original hours preserved.')}).catch(err=>{p.openingHours=previousOpeningHours;if(btn)btn.disabled=false;notify('Save failed: '+(err?.message||err),true);showSyncError(err?.message||String(err))});
 }
 function specializedSummary(rows){const sum=k=>rows.reduce((n,f)=>n+(Number(f[k])||0),0);const pair=(a,b)=>sum(a)+sum(b);return [{name:'Total Flight Hours',value:rows.reduce((n,f)=>n+(Number(f.duration)||0),0)},{name:'Day Flight',value:pair('dayPic','daySic')||rows.filter(f=>f.dayPic==null&&f.daySic==null).reduce((n,f)=>n+(Number(f.day)||0),0)},{name:'Night Flight',value:pair('nightPic','nightSic')||rows.filter(f=>f.nightPic==null&&f.nightSic==null).reduce((n,f)=>n+(Number(f.night)||0),0)},{name:'Simulator',value:pair('simPic','simSic')},{name:'Flight Instructor',value:pair('instructorPic','instructorSic')},{name:'CCP',value:pair('ccpPic','ccpSic')},{name:'Offshore · Helicopter',value:pair('offshorePic','offshoreSic'),heli:true},{name:'Mountainous · Helicopter',value:pair('mountainPic','mountainSic'),heli:true},{name:'High Altitude · Helicopter',value:pair('highPic','highSic'),heli:true}]}
 function pilotHourCards(rows){let items=addBaselineToItems(specializedSummary(rows),db.activePilotId);let hasHeli=rows.some(f=>getAircraft(f.aircraftId)?.category==='Helicopter')||['offshore','mountain','high','external'].some(k=>Number(activeBaseline()[k])>0);return `<section class="panel" style="margin-bottom:20px"><div class="panel-head"><div><h2>Personal Flight Hours Summary</h2><p>Accumulated hours · HH:MM · Classification hours are not double-counted</p></div></div><div class="stats-grid" style="padding:18px;grid-template-columns:repeat(auto-fit,minmax(170px,1fr))">${items.filter(x=>!x.heli||hasHeli).map(x=>statBox(x.name,fmt(x.value),'Accumulated hours','clock')).join('')}</div><div style="padding:0 18px 20px"><h3 style="margin:10px 0">Type Rating Hours by Aircraft</h3><div class="table-wrap"><table class="data-table"><thead><tr><th>Aircraft Type</th><th>PIC</th><th>SIC</th><th>Total</th></tr></thead><tbody>${Object.entries(rows.reduce((map,f)=>{let type=f.ratingType||getAircraft(f.aircraftId)?.type||'Unknown';let e=map[type]||(map[type]={pic:0,sic:0});e.pic+=f.ratingPic??((f.dayPic||0)+(f.nightPic||0));e.sic+=f.ratingSic??((f.daySic||0)+(f.nightSic||0));if(f.ratingPic==null&&f.ratingSic==null&&f.dayPic==null&&f.daySic==null){if(f.role==='PIC')e.pic+=f.duration||0;else if(f.role==='SIC')e.sic+=f.duration||0}return map},Object.fromEntries(db.fleet.filter(a=>activeBaseline().types?.[a.id]).map(a=>[a.type,{pic:Number(activeBaseline().types[a.id].pic)||0,sic:Number(activeBaseline().types[a.id].sic)||0}])))).filter(([type,v])=>v.pic+v.sic>0).map(([type,v])=>`<tr><td>${esc(type)}</td><td>${fmt(v.pic)}</td><td>${fmt(v.sic)}</td><td>${fmt(v.pic+v.sic)}</td></tr>`).join('')||'<tr><td colspan="4">No type rating hours recorded</td></tr>'}</tbody></table></div></div></section>`}
@@ -511,19 +558,19 @@ body=`${!isEdit?`<div class="notice" style="margin-bottom:14px;display:flex;gap:
 <div class="form-section"><strong>Additional Flight Information</strong><small>HH:MM</small></div><div class="form-grid"><div class="field"><label>IFR Time (HH:MM)</label><input name="ifrText" placeholder="00:00" value="${f.ifr!=null?fmt(f.ifr):''}"></div></div>
 <div class="form-section"><strong>Crew and Operations</strong><small>Optional metadata</small></div><div class="form-grid">${crewField("crewPic","Acting PIC / Commander",f.crewPic||"")}${crewField("crewSic","Acting SIC / Copilot",f.crewSic||"")}<div class="field wide"><label for="f_mission">Keterangan Misi / Mission Remarks *</label><select id="f_mission" name="mission" required>${missionOptions(f.mission||'')}</select><small>Mission categories are managed in Admin → Data & Settings.</small></div></div></form>`;
 footer=`${cancel}<button class="btn btn-primary" type="submit" form="recordForm">${ic('check')} ${isEdit?'Save Changes':'Save Flight Entry'}</button>`;
-}else if(type==='openingHours'){
+ }else if(type==='openingHours'){
  const p=getPilot(id);if(!p)return;
- const b=p.openingHours||{};
- title='Historical Flight Hours';sub=`Opening balances for ${p.name} · Admin only`;
- body=`<div class="notice" style="margin-bottom:15px">Enter hours carried forward from the pilot's previous logbook. These are opening balances, not new flight records. Enter totals as HH:MM; categories may overlap and are never added again to Total Flight Hours.</div>
+ const b=p.openingHours||{},first=!b.initial;
+ title='Historical Flight Hours';sub=`Original hours, corrected totals and automatic flight additions for ${p.name} · Admin only`;
+ body=`<div class="notice" style="margin-bottom:15px">Existing Historical Hours are preserved from the first saved baseline. Enter the <b>desired current total</b> to calculate a correction automatically. New flight records are added on top of the corrected opening balance, without changing the original Existing Hours.</div>
  <form id="openingHoursForm"><div class="form-grid">
- ${BASELINE_FIELDS.map(([k,l])=>baselineInput(k,l,b[k])).join('')}
- <div class="field wide"><h3>Historical Type Rating Hours</h3><p>Enter PIC and SIC totals for each aircraft type if available.</p></div>
- ${db.fleet.map(a=>`<div class="field wide"><strong>${esc(a.reg)} / ${esc(a.type)}</strong><div class="form-grid" style="margin-top:8px">${baselineInput('ratingPic_'+a.id,'PIC',b.types?.[a.id]?.pic)}${baselineInput('ratingSic_'+a.id,'SIC',b.types?.[a.id]?.sic)}</div></div>`).join('')}
+ ${BASELINE_FIELDS.map(([k,l])=>historicalCorrectionInput(k,l,Number(first?b[k]:b.initial[k])||0,historicalLogged(p.id,k),Number(first?0:b.adjustments?.[k])||0,first)).join('')}
+ <div class="field wide"><h3>Historical Type Rating Hours</h3><p>Original hours stay fixed; corrections account for flights already logged.</p></div>
+ ${db.fleet.map(a=>`<div class="field wide"><strong>${esc(a.reg)} / ${esc(a.type)}</strong><div class="form-grid" style="margin-top:8px">${['pic','sic'].map(role=>historicalCorrectionInput('rating'+(role==='pic'?'Pic_':'Sic_')+a.id,role.toUpperCase(),Number(first?b.types?.[a.id]?.[role]:b.initialTypes?.[a.id]?.[role])||0,historicalLogged(p.id,null,a.id,role),Number(first?0:b.typeAdjustments?.[a.id]?.[role])||0,first)).join('')}</div></div>`).join('')}
  <div class="field"><label>Balance As Of</label><input type="date" name="asOf" value="${esc(b.asOf||'')}"></div>
  <div class="field"><label>Source / Reference</label><input name="source" maxlength="160" value="${esc(b.source||'')}" placeholder="Previous pilot logbook / verified record"></div>
  </div></form>`;
- footer=`${cancel}<button class="btn btn-primary" type="submit" form="openingHoursForm">${ic('check')} Save Opening Balances</button>`;
+ footer=`${cancel}<button class="btn btn-primary" type="submit" form="openingHoursForm">${ic('check')} Save Historical Corrections</button>`;
  }else if(type==='pilot'){let p=db.pilots.find(x=>x.id===id)||{};title=isEdit?'Edit Pilot':'Add Pilot';sub='Manage flight personnel information';body=`<form id="pilotForm"><div class="form-grid"><div class="field wide"><label>Full Name *</label><input name="name" required maxlength="100" value="${esc(p.name||'')}" placeholder="Capt. Full Name"></div><div class="field"><label>Rank</label><select name="rank"><option ${p.rank==='Captain'?'selected':''}>Captain</option><option ${p.rank==='First Officer'?'selected':''}>First Officer</option><option ${p.rank==='Other'?'selected':''}>Other</option></select></div><div class="field"><label>License Number (optional)</label><input name="license" maxlength="60" value="${esc(p.license||'')}"></div></div></form>${isEdit?`<div style="margin-top:17px"><button class="btn btn-danger btn-sm" data-act="deletePilot" data-id="${esc(id)}">Delete pilot</button></div>`:''}`;footer=`${cancel}<button class="btn btn-primary" type="submit" form="pilotForm">${ic('check')} Save Pilot</button>`;
 }else if(type==='aircraft'){let a=db.fleet.find(x=>x.id===id)||{};title=isEdit?'Edit Aircraft':'Add Aircraft';sub='Fleet registration and aircraft type';body=`<form id="aircraftForm"><div class="form-grid"><div class="field"><label>Registration *</label><input name="reg" required maxlength="30" value="${esc(a.reg||'')}" placeholder="PK-XXX"></div><div class="field"><label>Aircraft Type *</label><input name="type" required maxlength="100" value="${esc(a.type||'')}" placeholder="Type and variant"></div><div class="field wide"><label>Aircraft Category</label><select name="category"><option ${a.category==='Helicopter'?'selected':''}>Helicopter</option><option ${a.category==='Fixed Wing'?'selected':''}>Fixed Wing</option></select></div></div></form>${isEdit?`<div style="margin-top:17px"><button class="btn btn-danger btn-sm" data-act="deleteAircraft" data-id="${esc(id)}">Delete aircraft</button></div>`:''}`;footer=`${cancel}<button class="btn btn-primary" type="submit" form="aircraftForm">${ic('check')} Save Aircraft</button>`;
 }else if(type==='chiefPilot'){
