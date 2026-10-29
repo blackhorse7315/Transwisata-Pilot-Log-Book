@@ -357,14 +357,26 @@ function pilotBaseline(id){return getPilot(id)?.openingHours||{}}
 function activeBaseline(){return db.activePilotId==='all'?{}:pilotBaseline(db.activePilotId)}
 function addBaselineToItems(items,id){const b=pilotBaseline(id);return items.map(x=>({...x,value:x.value+(Number(b[BASELINE_MAP[x.name]])||0)}))}
 function baselineInput(name,label,val){return `<div class="field"><label>${esc(label)}</label><input name="${esc(name)}" inputmode="numeric" placeholder="4222:05" value="${esc(fmt(Number(val)||0))}" data-hour-baseline="1"><small>HH:MM — press Space to insert : (e.g. 4222:05)</small></div>`}
-function saveOpeningHours(){
+async function saveOpeningHours(){
  const p=getPilot(state.editing),form=$('#openingHoursForm');if(!p||!form)return;
- const d=readForm(form),b={};for(const [key] of BASELINE_FIELDS){const v=parseTime(d[key]||'00:00');if(v===null||!Number.isFinite(v)||v<0){notify('Invalid HH:MM for '+key,true);return}b[key]=v}
- // These are independently classified historical hours; do not add subcategories to total.
+ // Finalize all inputs before FormData reads their values.
+ form.querySelectorAll('input[data-hour-baseline]').forEach(el=>formatHistoricalHour(el,true));
+ const d=readForm(form),b={};
+ for(const [key] of BASELINE_FIELDS){const v=parseTime(d[key]||'00:00');if(v===null||!Number.isFinite(v)||v<0){notify('Invalid HH:MM for '+key,true);return}b[key]=v}
  if(b.day+b.night>b.total){notify('Historical Day + Night cannot exceed Total Flight Hours.',true);return}
  const types={};for(const a of db.fleet){const k=a.id,pic=parseTime(d['ratingPic_'+k]||'00:00'),sic=parseTime(d['ratingSic_'+k]||'00:00');if(!Number.isFinite(pic)||!Number.isFinite(sic)||pic<0||sic<0){notify('Invalid type rating hours.',true);return}if(pic||sic)types[k]={pic,sic}}
- p.openingHours={...b,types,asOf:d.asOf||'',source:(d.source||'').trim()};
- persist();closeModal();render();notify('Historical opening balances saved for '+p.name);
+ const updated={...p,openingHours:{...b,types,asOf:d.asOf||'',source:(d.source||'').trim()}};
+ if(!cloudReady||cloudProfile?.role!=='admin'){notify('Only a connected Admin can save Historical Flight Hours.',true);return}
+ const saveBtn=document.querySelector('button[form="openingHoursForm"]');if(saveBtn){saveBtn.disabled=true;saveBtn.textContent='Saving to Firebase...'}
+ try{
+  // Serialize with pending writes, and only report success after Firestore confirms.
+  const snapshot=JSON.parse(JSON.stringify({...db,pilots:db.pilots.map(x=>x.id===p.id?updated:x),missions:missionList,duties:dutyList,chiefPilots}));
+  const task=cloudQueue.then(()=>cloudSave(snapshot));cloudQueue=task.catch(()=>{});
+  await task;
+  Object.assign(p,updated);
+  closeModal();render();notify('Historical opening balances saved to Firebase for '+p.name);
+ }catch(e){console.error('Historical save failed:',e);notify('Historical hours NOT saved: '+e.message,true);showSyncError(e.message)}
+ finally{if(saveBtn){saveBtn.disabled=false;saveBtn.textContent='Save Opening Balances'}}
 }
 function specializedSummary(rows){const sum=k=>rows.reduce((n,f)=>n+(Number(f[k])||0),0);const pair=(a,b)=>sum(a)+sum(b);return [{name:'Total Flight Hours',value:rows.reduce((n,f)=>n+(Number(f.duration)||0),0)},{name:'Day Flight',value:pair('dayPic','daySic')||rows.filter(f=>f.dayPic==null&&f.daySic==null).reduce((n,f)=>n+(Number(f.day)||0),0)},{name:'Night Flight',value:pair('nightPic','nightSic')||rows.filter(f=>f.nightPic==null&&f.nightSic==null).reduce((n,f)=>n+(Number(f.night)||0),0)},{name:'Simulator',value:pair('simPic','simSic')},{name:'Flight Instructor',value:pair('instructorPic','instructorSic')},{name:'CCP',value:pair('ccpPic','ccpSic')},{name:'Offshore · Helicopter',value:pair('offshorePic','offshoreSic'),heli:true},{name:'Mountainous · Helicopter',value:pair('mountainPic','mountainSic'),heli:true},{name:'High Altitude · Helicopter',value:pair('highPic','highSic'),heli:true}]}
 function pilotHourCards(rows){let items=addBaselineToItems(specializedSummary(rows),db.activePilotId);let hasHeli=rows.some(f=>getAircraft(f.aircraftId)?.category==='Helicopter')||['offshore','mountain','high','external'].some(k=>Number(activeBaseline()[k])>0);return `<section class="panel" style="margin-bottom:20px"><div class="panel-head"><div><h2>Personal Flight Hours Summary</h2><p>Accumulated hours · HH:MM · Classification hours are not double-counted</p></div></div><div class="stats-grid" style="padding:18px;grid-template-columns:repeat(auto-fit,minmax(170px,1fr))">${items.filter(x=>!x.heli||hasHeli).map(x=>statBox(x.name,fmt(x.value),'Accumulated hours','clock')).join('')}</div><div style="padding:0 18px 20px"><h3 style="margin:10px 0">Type Rating Hours by Aircraft</h3><div class="table-wrap"><table class="data-table"><thead><tr><th>Aircraft Type</th><th>PIC</th><th>SIC</th><th>Total</th></tr></thead><tbody>${Object.entries(rows.reduce((map,f)=>{let type=f.ratingType||getAircraft(f.aircraftId)?.type||'Unknown';let e=map[type]||(map[type]={pic:0,sic:0});e.pic+=f.ratingPic??((f.dayPic||0)+(f.nightPic||0));e.sic+=f.ratingSic??((f.daySic||0)+(f.nightSic||0));if(f.ratingPic==null&&f.ratingSic==null&&f.dayPic==null&&f.daySic==null){if(f.role==='PIC')e.pic+=f.duration||0;else if(f.role==='SIC')e.sic+=f.duration||0}return map},Object.fromEntries(db.fleet.filter(a=>activeBaseline().types?.[a.id]).map(a=>[a.type,{pic:Number(activeBaseline().types[a.id].pic)||0,sic:Number(activeBaseline().types[a.id].sic)||0}])))).filter(([type,v])=>v.pic+v.sic>0).map(([type,v])=>`<tr><td>${esc(type)}</td><td>${fmt(v.pic)}</td><td>${fmt(v.sic)}</td><td>${fmt(v.pic+v.sic)}</td></tr>`).join('')||'<tr><td colspan="4">No type rating hours recorded</td></tr>'}</tbody></table></div></div></section>`}
