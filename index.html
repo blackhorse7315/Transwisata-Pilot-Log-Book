@@ -921,8 +921,28 @@ document.addEventListener('keydown',e=>{
  input.setSelectionRange(hours.length+1,hours.length+1);
  input.setCustomValidity('');
 });
-document.addEventListener('input',e=>{if(e.target.matches('input.flight-hours')){formatHourEntry(e.target);syncRatingHours(e.target.closest('form'));if(['dayPic','nightPic','simPic'].includes(e.target.name))syncSpecialDutyHours(e.target.closest('form'))}else if(e.target.matches('input[data-hour-baseline]'))formatHistoricalHour(e.target)});
-document.addEventListener('focusout',e=>{if(e.target.matches('input.flight-hours')){formatHourEntry(e.target,true);if(['dayPic','nightPic','simPic'].includes(e.target.name))syncSpecialDutyHours(e.target.closest('form'))}else if(e.target.matches('input[data-hour-baseline]'))formatHistoricalHour(e.target,true)});
+// Historical target: Night Flight = Total Flight Hours - Day Flight.
+// Do not overwrite a manually edited Night target until Day or Total changes.
+function syncHistoricalNightTarget(changed){
+ const form=changed?.closest('#openingHoursForm');if(!form)return;
+ if(!['target_day','target_total'].includes(changed.name))return;
+ const totalInput=form.elements.namedItem('target_total');
+ const dayInput=form.elements.namedItem('target_day');
+ const nightInput=form.elements.namedItem('target_night');
+ if(!totalInput||!dayInput||!nightInput)return;
+ const valid=v=>/^\d+:([0-5]\d)$/.test(v.trim());
+ if(!valid(totalInput.value)||!valid(dayInput.value))return;
+ const total=parseTime(totalInput.value),day=parseTime(dayInput.value);
+ if(!Number.isFinite(total)||!Number.isFinite(day)||day>total){
+   dayInput.setCustomValidity(day>total?'Day Flight cannot exceed Total Flight Hours.':'');
+   return;
+ }
+ dayInput.setCustomValidity('');
+ nightInput.value=fmt(total-day);
+ nightInput.dispatchEvent(new Event('input',{bubbles:true}));
+}
+document.addEventListener('input',e=>{if(e.target.matches('input.flight-hours')){formatHourEntry(e.target);syncRatingHours(e.target.closest('form'));if(['dayPic','nightPic','simPic'].includes(e.target.name))syncSpecialDutyHours(e.target.closest('form'))}else if(e.target.matches('input[data-hour-baseline]')){formatHistoricalHour(e.target);if(/^\d+:([0-5]\d)$/.test(e.target.value))syncHistoricalNightTarget(e.target)}});
+document.addEventListener('focusout',e=>{if(e.target.matches('input.flight-hours')){formatHourEntry(e.target,true);if(['dayPic','nightPic','simPic'].includes(e.target.name))syncSpecialDutyHours(e.target.closest('form'))}else if(e.target.matches('input[data-hour-baseline]')){formatHistoricalHour(e.target,true);syncHistoricalNightTarget(e.target)}});
 document.addEventListener('input',e=>{if(e.target.id==='logSearch'){state.query=e.target.value;const pos=e.target.selectionStart;$('#view-logbook').innerHTML=logbook();let inp=$('#logSearch');inp.focus();inp.setSelectionRange(pos,pos)}});
 document.addEventListener('change',e=>{let map={filterFleet:'aircraft',filterDuty:'duty',filterFrom:'from',filterTo:'to',reportFrom:'reportFrom',reportTo:'reportTo'};if(map[e.target.id]){state[map[e.target.id]]=e.target.value;render()}});
 
