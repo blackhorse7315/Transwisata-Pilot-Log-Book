@@ -67,6 +67,9 @@ const firebaseConfig={apiKey:"AIzaSyBOvXaTNP2TYCG6fjJ6U9R3MgcyIVvyRWk",authDomai
 if(typeof firebase==='undefined'){document.getElementById('cloudGateMessage').textContent='Application services unavailable. Check internet connection and refresh the page.';throw Error('Firebase SDK unavailable')}
 firebase.initializeApp(firebaseConfig);
 const fbAuth=firebase.auth(), fbDb=firebase.firestore();
+// SESSION persistence isolates login credentials per browser tab.
+// Do not use LOCAL persistence: it synchronizes accounts between tabs.
+const tabAuthReady=fbAuth.setPersistence(firebase.auth.Auth.Persistence.SESSION);
 const personalRequested=new URLSearchParams(location.search).get('pilot');
 const loginEmailDomain='pilot.transwisata-apps.invalid';
 function usernameEmail(username){return username.toLowerCase()+'@'+loginEmailDomain;}
@@ -120,7 +123,7 @@ for(const id of ['sidebarLogout','topLogout']){
 async function signInCloud(event){
  event.preventDefault();
  const login=document.getElementById('cloudEmail').value.trim().toLowerCase(),email=login.includes('@')?login:usernameEmail(login),password=document.getElementById('cloudPassword').value;
- try{showLogin('Signing in...');await fbAuth.signInWithEmailAndPassword(email,password)}catch(e){showLogin('Login failed: '+e.message)}
+ try{showLogin('Signing in...');await tabAuthReady;await fbAuth.signInWithEmailAndPassword(email,password)}catch(e){showLogin('Login failed: '+e.message)}
 }
 async function createPilotAccount(id){
  if(cloudProfile?.role!=='admin')return notify('Admin only',true);
@@ -137,6 +140,7 @@ async function createPilotAccount(id){
  try{
   secondary=firebase.initializeApp(firebaseConfig,appName);
   const secondaryAuth=secondary.auth();
+  await secondaryAuth.setPersistence(firebase.auth.Auth.Persistence.NONE);
   created=await secondaryAuth.createUserWithEmailAndPassword(usernameEmail(username),password);
   // This write is performed with the ORIGINAL admin session; the secondary app does not replace it.
   await fbDb.doc('userAccess/'+created.user.uid).set({role:'pilot',pilotId:id,username,createdAt:firebase.firestore.FieldValue.serverTimestamp(),createdBy:cloudUser.uid});
@@ -252,6 +256,7 @@ async function cloudLoad(subscribe=true){
  notify('Data loaded successfully');
 }
 fbAuth.onAuthStateChanged(async user=>{
+ try{await tabAuthReady}catch(e){showLogin('Session initialization failed: '+e.message);return}
  cloudReady=false;
  if(!user){stopRealtime();cloudUser=null;cloudProfile=null;showLogin('Enter your username and password assigned by Admin.');return}
  cloudUser=user;
