@@ -311,7 +311,17 @@ function aircraftHoursSection(f,aircraft){
 }
 function syncRatingHours(form){if(!form)return;for(const role of ['Pic','Sic']){const day=parseTime(form.elements['day'+role]?.value)||0,night=parseTime(form.elements['night'+role]?.value)||0;const target=form.elements['rating'+role];if(target)target.value=fmt(day+night)}}
 
-function syncAircraftHours(form){let a=getAircraft(form.elements.aircraftId.value),container=form.querySelector('#flightHoursSection');if(container){let draft={};TIME_FIELDS.forEach(k=>{let el=form.elements[k];if(el){let v=parseTime(el.value);draft[k]=v??0}});container.innerHTML=aircraftHoursSection(draft,a);syncRatingHours(form)}}
+// Keep Instructor/CCP hours equal to the combined PIC Day, Night and Simulator hours.
+function syncSpecialDutyHours(form){
+ if(!form||form.id!=='recordForm')return;
+ const kind=dutyKind(form.elements.role?.value);
+ const minutes=['dayPic','nightPic','simPic'].reduce((sum,key)=>sum+(parseTime(form.elements[key]?.value)||0),0);
+ for(const [type,key] of [['instructor','instructorPic'],['ccp','ccpPic']]){
+  const field=form.elements[key];if(!field)continue;
+  if(kind===type)field.value=fmt(minutes);
+ }
+}
+function syncAircraftHours(form){let a=getAircraft(form.elements.aircraftId.value),container=form.querySelector('#flightHoursSection');if(container){let draft={};TIME_FIELDS.forEach(k=>{let el=form.elements[k];if(el){let v=parseTime(el.value);draft[k]=v??0}});container.innerHTML=aircraftHoursSection(draft,a);syncRatingHours(form);syncSpecialDutyHours(form)}}
 function saveMissions(){queueCloudSave()}
 function missionOptions(selected=''){
  let names=missionList.map(m=>m.name);
@@ -331,6 +341,7 @@ function syncDutyHours(){
  const role=form.querySelector('[name="role"]')?.value||'';
  const kind=dutyKind(role);
  form.querySelectorAll('[data-duty-special]').forEach(card=>{const show=card.dataset.dutySpecial===kind;card.style.display=show?'':'none';card.querySelectorAll('input').forEach(input=>{input.disabled=!show;if(!show)input.value='';});});
+ syncSpecialDutyHours(form);
 }
 function driveImageUrl(url){
  const value=String(url||'').trim();
@@ -702,7 +713,9 @@ const duty=dutyKind(d.role);
 if(duty!=='instructor'){hours.instructorPic=0;hours.instructorSic=0;}
 if(duty!=='ccp'){hours.ccpPic=0;hours.ccpSic=0;}
 hours.instructorSic=0;hours.ccpSic=0;
-hours.ratingPic=hours.dayPic+hours.nightPic;hours.ratingSic=hours.daySic+hours.nightSic;let day=hours.dayPic+hours.daySic,night=hours.nightPic+hours.nightSic,total=day+night,ifr=parseTime(d.ifrText)??0;if(total>1440){notify('Total Day + Night exceeds 24:00.',true);return}if(ifr<0||ifr>total){notify('IFR must not exceed actual flight hours.',true);return}for(const [a,b] of [['mountainPic','mountainSic'],['offshorePic','offshoreSic'],['externalPic','externalSic'],['highPic','highSic'],['instructorPic','instructorSic'],['ccpPic','ccpSic'],['ratingPic','ratingSic']]){if(hours[a]>hours.dayPic+hours.nightPic||hours[b]>hours.daySic+hours.nightSic){notify('Specialized and type-rating hours cannot exceed the corresponding PIC/SIC flight hours.',true);return}}
+if(duty==='instructor')hours.instructorPic=hours.dayPic+hours.nightPic+hours.simPic;
+if(duty==='ccp')hours.ccpPic=hours.dayPic+hours.nightPic+hours.simPic;
+hours.ratingPic=hours.dayPic+hours.nightPic;hours.ratingSic=hours.daySic+hours.nightSic;let day=hours.dayPic+hours.daySic,night=hours.nightPic+hours.nightSic,total=day+night,ifr=parseTime(d.ifrText)??0;if(total>1440){notify('Total Day + Night exceeds 24:00.',true);return}if(ifr<0||ifr>total){notify('IFR must not exceed actual flight hours.',true);return}for(const [a,b] of [['mountainPic','mountainSic'],['offshorePic','offshoreSic'],['externalPic','externalSic'],['highPic','highSic'],['ratingPic','ratingSic']]){if(hours[a]>hours.dayPic+hours.nightPic||hours[b]>hours.daySic+hours.nightSic){notify('Specialized and type-rating hours cannot exceed the corresponding PIC/SIC flight hours.',true);return}}
 if(!total&&!(hours.simPic+hours.simSic)){notify('Enter at least one flight or simulator hour.',true);return}
 
 let existing=db.flights.find(f=>f.id===state.editing),newrec={id:existing?.id||uid('fl'),date:d.date,pilotId:d.pilotId,aircraftId:d.aircraftId,origin:formatLocationName(d.origin),destination:formatLocationName(d.destination),depUtc:"",arrUtc:"",duration:total,day,night,ifr,...hours,ratingType:aircraft?.type||"",role:d.role,crewPic:d.crewPic.trim(),crewSic:d.crewSic.trim(),mission:d.mission.trim(),remarks:existing?.remarks||'',landingsDay:existing?.landingsDay||0,landingsNight:existing?.landingsNight||0,createdAt:existing?.createdAt||new Date().toISOString(),updatedAt:new Date().toISOString(),demo:existing?.demo||false};
@@ -908,8 +921,8 @@ document.addEventListener('keydown',e=>{
  input.setSelectionRange(hours.length+1,hours.length+1);
  input.setCustomValidity('');
 });
-document.addEventListener('input',e=>{if(e.target.matches('input.flight-hours')){formatHourEntry(e.target);syncRatingHours(e.target.closest('form'))}else if(e.target.matches('input[data-hour-baseline]'))formatHistoricalHour(e.target)});
-document.addEventListener('focusout',e=>{if(e.target.matches('input.flight-hours'))formatHourEntry(e.target,true);else if(e.target.matches('input[data-hour-baseline]'))formatHistoricalHour(e.target,true)});
+document.addEventListener('input',e=>{if(e.target.matches('input.flight-hours')){formatHourEntry(e.target);syncRatingHours(e.target.closest('form'));if(['dayPic','nightPic','simPic'].includes(e.target.name))syncSpecialDutyHours(e.target.closest('form'))}else if(e.target.matches('input[data-hour-baseline]'))formatHistoricalHour(e.target)});
+document.addEventListener('focusout',e=>{if(e.target.matches('input.flight-hours')){formatHourEntry(e.target,true);if(['dayPic','nightPic','simPic'].includes(e.target.name))syncSpecialDutyHours(e.target.closest('form'))}else if(e.target.matches('input[data-hour-baseline]'))formatHistoricalHour(e.target,true)});
 document.addEventListener('input',e=>{if(e.target.id==='logSearch'){state.query=e.target.value;const pos=e.target.selectionStart;$('#view-logbook').innerHTML=logbook();let inp=$('#logSearch');inp.focus();inp.setSelectionRange(pos,pos)}});
 document.addEventListener('change',e=>{let map={filterFleet:'aircraft',filterDuty:'duty',filterFrom:'from',filterTo:'to',reportFrom:'reportFrom',reportTo:'reportTo'};if(map[e.target.id]){state[map[e.target.id]]=e.target.value;render()}});
 
