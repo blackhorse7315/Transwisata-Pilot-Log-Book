@@ -65,11 +65,27 @@ body.personal-logbook #adminNavHeading,body.personal-logbook #adminNav{display:n
 (() => {'use strict';
 const firebaseConfig={apiKey:"AIzaSyBOvXaTNP2TYCG6fjJ6U9R3MgcyIVvyRWk",authDomain:"transwisata-apps.firebaseapp.com",projectId:"transwisata-apps",storageBucket:"transwisata-apps.firebasestorage.app",messagingSenderId:"99146065058",appId:"1:99146065058:web:b276b0be2a7708ffc923fb",measurementId:"G-69GCT6RCR5"};
 if(typeof firebase==='undefined'){document.getElementById('cloudGateMessage').textContent='Application services unavailable. Check internet connection and refresh the page.';throw Error('Firebase SDK unavailable')}
-firebase.initializeApp(firebaseConfig);
-const fbAuth=firebase.auth(), fbDb=firebase.firestore();
-// SESSION persistence isolates login credentials per browser tab.
-// Do not use LOCAL persistence: it synchronizes accounts between tabs.
-const tabAuthReady=fbAuth.setPersistence(firebase.auth.Auth.Persistence.SESSION);
+// Give each browser tab its own Firebase app name. LOCAL persistence is keyed
+// by the Firebase app name, so distinct tabs cannot overwrite each other's login.
+// window.name survives page reloads and browser tab/session restoration.
+// A standalone installed PWA also remembers its own app identifier across launches.
+const authTabPrefix='twa-skyops-auth-';
+const standaloneMode=window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone===true;
+const standaloneKey='twa-skyops-standalone-auth-id';
+let authTabId='';
+try{
+ const named=String(window.name||'');
+ if(named.startsWith(authTabPrefix)&&/^[a-z0-9-]+$/.test(named.slice(authTabPrefix.length)))authTabId=named.slice(authTabPrefix.length);
+ if(!authTabId&&standaloneMode)authTabId=localStorage.getItem(standaloneKey)||'';
+ if(!/^[a-z0-9-]{8,80}$/.test(authTabId))authTabId='tab-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,12);
+ window.name=authTabPrefix+authTabId;
+ if(standaloneMode)localStorage.setItem(standaloneKey,authTabId);
+}catch(_){authTabId='tab-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,12)}
+const primaryApp=firebase.initializeApp(firebaseConfig,'skyops-'+authTabId);
+const fbAuth=primaryApp.auth(), fbDb=primaryApp.firestore();
+// LOCAL persistence retains credentials after closing/reopening the tab or PWA.
+// Different app names prevent cross-tab account switching.
+const tabAuthReady=fbAuth.setPersistence(firebase.auth.Auth.Persistence.LOCAL);
 const personalRequested=new URLSearchParams(location.search).get('pilot');
 const loginEmailDomain='pilot.transwisata-apps.invalid';
 function usernameEmail(username){return username.toLowerCase()+'@'+loginEmailDomain;}
