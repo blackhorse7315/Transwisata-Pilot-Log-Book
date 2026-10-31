@@ -214,13 +214,22 @@ async function cloudSave(snapshot){
   ops.push({kind:'set',ref:fbDb.doc('logbook/config'),data:{fleet:snapshot.fleet,missions:snapshot.missions,duties:snapshot.duties,chiefPilots:snapshot.chiefPilots,...cloudMeta()}});
   for(const p of snapshot.pilots){
    const flights=snapshot.flights.filter(f=>f.pilotId===p.id);
-   ops.push({kind:'set',ref:fbDb.doc('logbookPilots/'+p.id),data:{profile:p,flights,...cloudMeta()}});
+   // Never overwrite the Chief Pilot approval during ordinary Admin saves.
+   // Validation is written independently by approvePilot() and belongs to the
+   // authoritative pilot document, not a possibly stale UI snapshot.
+   const profileFields={};
+   for(const [key,value] of Object.entries(p)){
+    if(key!=='reportApproval')profileFields['profile.'+key]=value;
+   }
+   const pilotRef=fbDb.doc('logbookPilots/'+p.id);
+   if(existing.has(p.id))ops.push({kind:'update',ref:pilotRef,data:{...profileFields,flights,...cloudMeta()}});
+   else ops.push({kind:'set',ref:pilotRef,data:{profile:{...p,reportApproval:null},flights,...cloudMeta()}});
   }
   for(const id of existing)if(!desired.has(id))ops.push({kind:'delete',ref:fbDb.doc('logbookPilots/'+id)});
   // Firestore batch has a 500-write limit; use bounded chunks.
   for(let i=0;i<ops.length;i+=400){
    const batch=fbDb.batch();
-   for(const op of ops.slice(i,i+400))op.kind==='delete'?batch.delete(op.ref):batch.set(op.ref,op.data);
+   for(const op of ops.slice(i,i+400)){if(op.kind==='delete')batch.delete(op.ref);else if(op.kind==='update')batch.update(op.ref,op.data);else batch.set(op.ref,op.data)}
    await batch.commit();
   }
  }else if(role==='pilot'||role==='link'){
@@ -613,6 +622,18 @@ async function approvePilot(pilotId){
 async function exportValidatedPdf(){
  const pilotId=personalMode?personalPilotId:db.activePilotId;
  if(!pilotId||pilotId==='all')return notify('Select one pilot to export.',true);
+ // Read the latest approved report directly from the server before rendering.
+ // This works even when the pilot tab was opened before Admin revalidated.
+ try{
+  await cloudQueue.catch(()=>{});
+  const latest=await fbDb.doc('logbookPilots/'+pilotId).get({source:'server'});
+  if(!latest.exists)throw Error('Pilot record not found');
+  const remote=latest.data();
+  const localIndex=db.pilots.findIndex(p=>p.id===pilotId);
+  if(localIndex<0)throw Error('Pilot is not available in this account');
+  db.pilots[localIndex]=remote.profile;
+  db.flights=db.flights.filter(f=>f.pilotId!==pilotId).concat(remote.flights||[]);
+ }catch(e){notify('Unable to verify latest Chief Pilot validation. PDF export stopped: '+e.message,true);return}
  const pilot=getPilot(pilotId);if(!pilot)return;
  const rows=reportRows().filter(f=>f.pilotId===pilotId);
  const allRows=db.flights.filter(f=>f.pilotId===pilotId);
