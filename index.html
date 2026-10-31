@@ -626,14 +626,15 @@ async function exportValidatedPdf(){
  // This works even when the pilot tab was opened before Admin revalidated.
  try{
   await cloudQueue.catch(()=>{});
-  const latest=await fbDb.doc('logbookPilots/'+pilotId).get({source:'server'});
+  const [latest,latestConfig]=await Promise.all([fbDb.doc('logbookPilots/'+pilotId).get({source:'server'}),fbDb.doc('logbook/config').get({source:'server'})]);
+  if(latestConfig.exists)chiefPilots=latestConfig.data()?.chiefPilots||{};
   if(!latest.exists)throw Error('Pilot record not found');
   const remote=latest.data();
   const localIndex=db.pilots.findIndex(p=>p.id===pilotId);
   if(localIndex<0)throw Error('Pilot is not available in this account');
   db.pilots[localIndex]=remote.profile;
   db.flights=db.flights.filter(f=>f.pilotId!==pilotId).concat(remote.flights||[]);
- }catch(e){notify('Unable to verify latest Chief Pilot validation. PDF export stopped: '+e.message,true);return}
+ }catch(e){notify('Unable to load latest pilot and Chief Pilot information. PDF export stopped: '+e.message,true);return}
  const pilot=getPilot(pilotId);if(!pilot)return;
  const rows=reportRows().filter(f=>f.pilotId===pilotId);
  const allRows=db.flights.filter(f=>f.pilotId===pilotId);
@@ -646,7 +647,8 @@ async function exportValidatedPdf(){
  // A later edit to the admin's current Chief Pilot profile must not silently erase
  // an already authorized validation; revalidation replaces this snapshot.
  const signedChief=approved?{name:approval.chiefName,position:approval.chiefPosition,sign:approval.chiefSign}:cp;
- const signature=approved?driveImageUrl(approval.chiefSign):'';
+ const signature=signedChief?.name&&signedChief?.position&&signedChief?.sign?driveImageUrl(signedChief.sign):'';
+ const signatureStatus=approved?'VALIDATED BY CHIEF PILOT':'CHIEF PILOT SIGNATURE ON FILE — AUTO INCLUDED';
  const period=specializedSummary(rows), lifetime=addBaselineToItems(specializedSummary(allRows),pilotId);
  const historical=pilot.openingHours||{};
  const total=period.find(x=>x.name==='Total Flight Hours')?.value||0;
@@ -676,8 +678,8 @@ async function exportValidatedPdf(){
  <section class="section"><div class="section-title"><h2>TYPE RATING HOURS — ACCUMULATED</h2><span>PIC / SIC by aircraft type</span></div><table><thead><tr><th>AIRCRAFT TYPE</th><th class="num">PIC</th><th class="num">SIC</th><th class="num">TOTAL</th></tr></thead><tbody>${typeRows||'<tr><td colspan="4">No type rating hours recorded</td></tr>'}</tbody></table></section>
  <section class="section records"><div class="section-title"><h2>FLIGHT RECORDS — SELECTED PERIOD</h2><span>${rows.length} entries · Total ${fmt(total)}</span></div><table><thead><tr><th>#</th><th>DATE</th><th>AIRCRAFT</th><th>ROUTE</th><th>DUTY</th><th>CREW (PIC / SIC)</th><th>MISSION</th><th class="num">TOTAL</th><th class="num">DAY</th><th class="num">NIGHT</th></tr></thead><tbody>${dataRows||'<tr><td colspan="10">No flight records for this period</td></tr>'}<tr class="subtotal"><td colspan="7">TOTAL HOURS — REPORT PERIOD</td><td class="num">${fmt(total)}</td><td class="num">${fmt(period.find(x=>x.name==='Day Flight')?.value||0)}</td><td class="num">${fmt(period.find(x=>x.name==='Night Flight')?.value||0)}</td></tr></tbody></table></section>
  <div class="footer-grid"><div class="validation"><h2>RECORD INFORMATION</h2><p><b>Historical opening balance:</b> ${fmt(Number(historical.total)||0)} hours ${historical.asOf?'· As of '+esc(historical.asOf):''}</p><p style="margin-top:7px"><b>Historical source:</b> ${esc(historical.source||'Not specified')}</p><p style="margin-top:7px"><b>All-time total:</b> ${fmt(lifetimeTotal)} hours · <b>Report period:</b> ${fmt(total)} hours</p><p style="margin-top:7px" class="muted">Classification hours may overlap with total flight hours and are not added to the overall total a second time.</p></div>
- <div class="validation">${approved?`<div class="sign"><b>VALIDATED BY CHIEF PILOT — ${esc(wing==='rotary'?'ROTARY WING':'FIXED WING')}</b>${signature?`<img src="${esc(signature)}" alt="Chief Pilot signature" referrerpolicy="no-referrer">`:''}<div class="sign-name">${esc(signedChief.name)}</div><div>${esc(signedChief.position)}</div><small>Recorded approval: ${esc(approval.approvedAt)} · Admin UID: ${esc(approval.approvedBy)}</small></div>`:`<div class="warning">NOT VALIDATED — Chief Pilot signature withheld until the current records are approved.</div>`}</div></div>
- <div class="fineprint">Report fingerprint: ${esc(approval?.hash?.slice(0,24)||'Not validated')} · Validation status is based on the current record fingerprint. This printout is not, by itself, proof of regulatory acceptance or a qualified electronic signature. Signature images from third-party links may require separate access permissions.</div>
+ <div class="validation">${signature?`<div class="sign"><b>${esc(signatureStatus)} — ${esc(wing==='rotary'?'ROTARY WING':'FIXED WING')}</b>${signature?`<img src="${esc(signature)}" alt="Chief Pilot signature" referrerpolicy="no-referrer">`:''}<div class="sign-name">${esc(signedChief.name)}</div><div>${esc(signedChief.position)}</div><small>${approved?'Recorded approval: '+esc(approval.approvedAt):'Automatically included from Chief Pilot profile · No individual report validation recorded'}</small></div>`:`<div class="warning">Chief Pilot signature is not configured or accessible. Contact Admin.</div>`}</div></div>
+ <div class="fineprint">Report fingerprint: ${esc(approved?approval.hash.slice(0,24):'No individual approval')} · ${approved?'Individual report validation recorded.':'Chief Pilot signature is included automatically and does not indicate individual report approval.'} This printout is not, by itself, proof of regulatory acceptance or a qualified electronic signature. Signature images from third-party links may require separate access permissions.</div>
  </body></html>`;
  win.document.open();win.document.write(html);win.document.close();
 }
