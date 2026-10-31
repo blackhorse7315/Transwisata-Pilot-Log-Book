@@ -91,18 +91,48 @@ const loginEmailDomain='pilot.transwisata-apps.invalid';
 function usernameEmail(username){return username.toLowerCase()+'@'+loginEmailDomain;}
 // Offline persistence is deliberately not enabled; Firestore is the sole data source.
 let cloudUser=null,cloudProfile=null,cloudReady=false,cloudSaving=false,cloudQueue=Promise.resolve();
-let realtimeUnsubscribe=null,realtimeRefreshPending=false;
-function stopRealtime(){if(realtimeUnsubscribe){realtimeUnsubscribe();realtimeUnsubscribe=null}}
+let realtimeUnsubscribe=null,realtimeConfigUnsubscribe=null,realtimeRefreshPending=false,realtimeRefreshNeeded=false;
+function stopRealtime(){
+ if(realtimeUnsubscribe){realtimeUnsubscribe();realtimeUnsubscribe=null}
+ if(realtimeConfigUnsubscribe){realtimeConfigUnsubscribe();realtimeConfigUnsubscribe=null}
+ realtimeRefreshNeeded=false;
+}
+function realtimeModalBusy(){return !!document.querySelector('#modalWrap.show')}
+function scheduleRealtimeRefresh(){
+ if(!cloudReady)return;
+ realtimeRefreshNeeded=true;
+ if(realtimeRefreshPending||realtimeModalBusy())return;
+ realtimeRefreshPending=true;
+ cloudQueue.catch(()=>{}).then(async()=>{
+  if(!cloudReady||!realtimeRefreshNeeded||realtimeModalBusy())return;
+  realtimeRefreshNeeded=false;
+  await cloudLoad(false);
+ }).catch(e=>{realtimeRefreshNeeded=true;console.warn('Realtime refresh:',e)}).finally(()=>{realtimeRefreshPending=false});
+}
 function startRealtime(){
  stopRealtime();if(!cloudUser||!cloudProfile)return;
- const ref=cloudProfile.role==='admin'?fbDb.collection('logbookPilots'):fbDb.doc('logbookPilots/'+cloudProfile.pilotId);
+ const isAdmin=cloudProfile.role==='admin';
+ const ref=isAdmin?fbDb.collection('logbookPilots'):fbDb.doc('logbookPilots/'+cloudProfile.pilotId);
  let first=true;
- realtimeUnsubscribe=ref.onSnapshot(()=>{
+ realtimeUnsubscribe=ref.onSnapshot(snapshot=>{
   if(first){first=false;return}
-  if(!cloudReady||realtimeRefreshPending)return;
-  realtimeRefreshPending=true;
-  cloudQueue.catch(()=>{}).then(async()=>{if(cloudReady&&!document.getElementById('openingHoursForm'))await cloudLoad(false)}).catch(e=>console.warn('Realtime refresh:',e)).finally(()=>{realtimeRefreshPending=false});
- },e=>console.warn('Realtime listener:',e));
+  // Update the pilot's signed approval in memory immediately, even if a modal is open.
+  // The complete data refresh is deferred while a form is being edited.
+  if(!isAdmin&&snapshot.exists){
+   const updated=snapshot.data()?.profile;
+   const pilot=db?.pilots?.find(p=>p.id===cloudProfile.pilotId);
+   if(pilot&&updated)pilot.reportApproval=updated.reportApproval||null;
+  }
+  scheduleRealtimeRefresh();
+ },e=>console.warn('Realtime pilot listener:',e));
+ // The Chief Pilot configuration is shared, so a pilot must also observe it.
+ if(!isAdmin){
+  let configFirst=true;
+  realtimeConfigUnsubscribe=fbDb.doc('logbook/config').onSnapshot(()=>{
+   if(configFirst){configFirst=false;return}
+   scheduleRealtimeRefresh();
+  },e=>console.warn('Realtime configuration listener:',e));
+ }
 }
 
 const cloudMeta=()=>({updatedAt:firebase.firestore.FieldValue.serverTimestamp(),updatedBy:cloudUser?.uid||null});
@@ -590,8 +620,12 @@ async function exportValidatedPdf(){
  if(wing==='mixed')return notify('Mixed Rotary/Fixed Wing entries require separate wing validation and reporting.',true);
  const cp=chiefPilots[wing]||{};
  const approval=pilot.reportApproval;
- const approved=!!(approval&&approval.hash===await reportHash(pilotId)&&approval.chiefWing===wing&&approval.chiefName===cp.name&&approval.chiefSign===cp.sign);
- const signature=approved?driveImageUrl(cp.sign):'';
+ const approved=!!(approval&&approval.hash===await reportHash(pilotId)&&approval.chiefWing===wing&&approval.chiefName&&approval.chiefSign);
+ // Use the Chief Pilot identity and signature captured at the time of approval.
+ // A later edit to the admin's current Chief Pilot profile must not silently erase
+ // an already authorized validation; revalidation replaces this snapshot.
+ const signedChief=approved?{name:approval.chiefName,position:approval.chiefPosition,sign:approval.chiefSign}:cp;
+ const signature=approved?driveImageUrl(approval.chiefSign):'';
  const period=specializedSummary(rows), lifetime=addBaselineToItems(specializedSummary(allRows),pilotId);
  const historical=pilot.openingHours||{};
  const total=period.find(x=>x.name==='Total Flight Hours')?.value||0;
@@ -621,7 +655,7 @@ async function exportValidatedPdf(){
  <section class="section"><div class="section-title"><h2>TYPE RATING HOURS — ACCUMULATED</h2><span>PIC / SIC by aircraft type</span></div><table><thead><tr><th>AIRCRAFT TYPE</th><th class="num">PIC</th><th class="num">SIC</th><th class="num">TOTAL</th></tr></thead><tbody>${typeRows||'<tr><td colspan="4">No type rating hours recorded</td></tr>'}</tbody></table></section>
  <section class="section records"><div class="section-title"><h2>FLIGHT RECORDS — SELECTED PERIOD</h2><span>${rows.length} entries · Total ${fmt(total)}</span></div><table><thead><tr><th>#</th><th>DATE</th><th>AIRCRAFT</th><th>ROUTE</th><th>DUTY</th><th>CREW (PIC / SIC)</th><th>MISSION</th><th class="num">TOTAL</th><th class="num">DAY</th><th class="num">NIGHT</th></tr></thead><tbody>${dataRows||'<tr><td colspan="10">No flight records for this period</td></tr>'}<tr class="subtotal"><td colspan="7">TOTAL HOURS — REPORT PERIOD</td><td class="num">${fmt(total)}</td><td class="num">${fmt(period.find(x=>x.name==='Day Flight')?.value||0)}</td><td class="num">${fmt(period.find(x=>x.name==='Night Flight')?.value||0)}</td></tr></tbody></table></section>
  <div class="footer-grid"><div class="validation"><h2>RECORD INFORMATION</h2><p><b>Historical opening balance:</b> ${fmt(Number(historical.total)||0)} hours ${historical.asOf?'· As of '+esc(historical.asOf):''}</p><p style="margin-top:7px"><b>Historical source:</b> ${esc(historical.source||'Not specified')}</p><p style="margin-top:7px"><b>All-time total:</b> ${fmt(lifetimeTotal)} hours · <b>Report period:</b> ${fmt(total)} hours</p><p style="margin-top:7px" class="muted">Classification hours may overlap with total flight hours and are not added to the overall total a second time.</p></div>
- <div class="validation">${approved?`<div class="sign"><b>VALIDATED BY CHIEF PILOT — ${esc(wing==='rotary'?'ROTARY WING':'FIXED WING')}</b>${signature?`<img src="${esc(signature)}" alt="Chief Pilot signature" referrerpolicy="no-referrer">`:''}<div class="sign-name">${esc(cp.name)}</div><div>${esc(cp.position)}</div><small>Recorded approval: ${esc(approval.approvedAt)} · Admin UID: ${esc(approval.approvedBy)}</small></div>`:`<div class="warning">NOT VALIDATED — Chief Pilot signature withheld until the current records are approved.</div>`}</div></div>
+ <div class="validation">${approved?`<div class="sign"><b>VALIDATED BY CHIEF PILOT — ${esc(wing==='rotary'?'ROTARY WING':'FIXED WING')}</b>${signature?`<img src="${esc(signature)}" alt="Chief Pilot signature" referrerpolicy="no-referrer">`:''}<div class="sign-name">${esc(signedChief.name)}</div><div>${esc(signedChief.position)}</div><small>Recorded approval: ${esc(approval.approvedAt)} · Admin UID: ${esc(approval.approvedBy)}</small></div>`:`<div class="warning">NOT VALIDATED — Chief Pilot signature withheld until the current records are approved.</div>`}</div></div>
  <div class="fineprint">Report fingerprint: ${esc(approval?.hash?.slice(0,24)||'Not validated')} · Validation status is based on the current record fingerprint. This printout is not, by itself, proof of regulatory acceptance or a qualified electronic signature. Signature images from third-party links may require separate access permissions.</div>
  </body></html>`;
  win.document.open();win.document.write(html);win.document.close();
@@ -697,7 +731,7 @@ footer=`${cancel}<button class="btn btn-primary" type="submit" form="recordForm"
 }else if(type==='import'){title='Import Flight Records';sub='CSV import or JSON backup restore';body=`<div class="notice">${ic('info')}<div>Use a CSV file previously exported from this application, or restore a JSON backup. A CSV import appends records and skips matching IDs. A JSON restore replaces the entire data set after confirmation.</div></div><p class="info-note">For CSV, make sure pilot names and aircraft registrations exist in the directories. Unknown pilots/registrations will be skipped with a reported count.</p><button class="btn" data-act="template">${ic('down')} Download CSV Template</button>`;footer=`${cancel}<button class="btn btn-primary" data-act="selectFile">${ic('upload')} Choose CSV / JSON File</button>`;
 }
 $('#modalTitle').textContent=title;$('#modalSub').textContent=sub;$('#modalBody').innerHTML=body;$('#modalFoot').innerHTML=footer;$('#modal').classList.toggle('narrow',type!=='flight');$('#modalWrap').classList.add('show');if(type==='flight')syncDutyHours();if(type==='chiefPilot')updateChiefSignaturePreview();document.body.style.overflow='hidden';if(type==='flight'){const f=$('#recordForm');f.elements.aircraftId.addEventListener('change',()=>{syncManualAircraft(f);syncAircraftHours(f)});f.elements.manualAircraft.addEventListener('input',e=>{if(/\s$/.test(e.target.value)&&/^PK\s$/i.test(e.target.value))e.target.value='PK-';});syncManualAircraft(f);const missionSelect=f.elements.missionSelect,missionManual=f.elements.missionManual;const syncMission=()=>{const custom=missionSelect.value==='__manual__';missionManual.style.display=custom?'':'none';missionManual.required=custom;missionSelect.required=!custom;if(custom)missionManual.focus()};missionSelect.addEventListener('change',syncMission);syncMission()}}
-function closeModal(){state.copyDraft=null;state.modalType=null;state.editing=null;$('#modalWrap').classList.remove('show');document.body.style.overflow=''}
+function closeModal(){state.copyDraft=null;state.modalType=null;state.editing=null;$('#modalWrap').classList.remove('show');document.body.style.overflow='';if(realtimeRefreshNeeded)queueMicrotask(scheduleRealtimeRefresh)}
 const CREW_CHOICES=['Self','Tobing','Setyo','Purwoko','Marcel','Teddy','Ramdan','Eli','Alfajri','Sofwan','Rico','Riza','Wawan','Aldy','Berli'];
 function crewField(name,label,value=''){
  const known=CREW_CHOICES.includes(value);
