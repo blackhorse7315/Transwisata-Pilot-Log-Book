@@ -671,7 +671,7 @@ async function exportValidatedPdf(){
  const lifetimeCards=lifetime.filter(x=>!x.heli||wing==='rotary'||x.value>0).map(x=>metric(x.name,x.value)).join('');
  const typeRows=Object.entries(typeMap).filter(([,v])=>v.pic+v.sic>0).sort((a,b)=>a[0].localeCompare(b[0])).map(([type,v])=>`<tr><td>${esc(type)}</td><td class="num">${fmt(v.pic)}</td><td class="num">${fmt(v.sic)}</td><td class="num"><b>${fmt(v.pic+v.sic)}</b></td></tr>`).join('');
  const historicalTypeRows=manualRatingRows.map(r=>`<tr><td>${esc(r.name)} <small>(Historical only)</small></td><td class="num">—</td><td class="num">—</td><td class="num"><b>${fmt(r.minutes)}</b></td></tr>`).join('');
- const ratingFooter=(ratingTotal>0)?`<tr class="subtotal"><td colspan="3">TOTAL HOURS — ALL TYPE RATINGS</td><td class="num"><b>${fmt(ratingTotal)}</b></td></tr>`:'';
+ const ratingFooter='';
  const dataRows=rows.map((f,i)=>`<tr><td>${i+1}</td><td>${esc(dmy(f.date))}</td><td>${esc(getAircraft(f.aircraftId)?.reg||'—')}</td><td>${esc(f.origin||'—')} – ${esc(f.destination||'—')}</td><td>${esc(f.role||'—')}</td><td><b>PIC:</b> ${esc(f.crewPic||'—')}<br><b>SIC:</b> ${esc(f.crewSic||'—')}</td><td>${esc(f.mission||'—')}</td><td class="num">${fmt(Number(f.duration)||0)}</td><td class="num">${fmt((Number(f.dayPic)||0)+(Number(f.daySic)||0)||Number(f.day)||0)}</td><td class="num">${fmt((Number(f.nightPic)||0)+(Number(f.nightSic)||0)||Number(f.night)||0)}</td></tr>`).join('');
  const win=window.open('','_blank');if(!win)return notify('Allow pop-ups to export the report.',true);
  const html=`<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Transwisata Flight Logbook — ${esc(pilot.name)}</title>
