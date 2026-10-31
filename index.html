@@ -562,8 +562,23 @@ async function approvePilot(pilotId){
  const cp=chiefPilots[category];
  if(!cp?.name||!cp?.position||!cp?.sign)return notify('Configure Chief Pilot name, position and signature URL first.',true);
  if(!confirm('Validate all current records for '+pilot.name+' as '+cp.name+'? This records your Admin approval; only approve if the Chief Pilot has actually authorized it.'))return;
- pilot.reportApproval={hash:await reportHash(pilotId),chiefWing:category,chiefName:cp.name,chiefPosition:cp.position,chiefSign:cp.sign,approvedAt:new Date().toISOString(),approvedBy:cloudUser.uid};
- persist();render();notify('Approval recorded. Revalidate after any flight record changes.');
+ // Persist the approval before announcing success. Do not use the generic queued
+ // save here: its error handler swallows failures and can show a false success.
+ const previousApproval=pilot.reportApproval;
+ const approval={hash:await reportHash(pilotId),chiefWing:category,chiefName:cp.name,chiefPosition:cp.position,chiefSign:cp.sign,approvedAt:new Date().toISOString(),approvedBy:cloudUser.uid};
+ try{
+  await cloudQueue.catch(()=>{}); // wait for earlier edits to finish
+  await fbDb.doc('logbookPilots/'+pilotId).update({
+   'profile.reportApproval':approval,...cloudMeta()
+  });
+  pilot.reportApproval=approval;
+  render();
+  notify('PDF validation saved. Export PDF + Chief Pilot now reflects the approval.');
+ }catch(e){
+  pilot.reportApproval=previousApproval;
+  render();
+  notify('PDF validation could not be saved: '+e.message,true);
+ }
 }
 async function exportValidatedPdf(){
  const pilotId=personalMode?personalPilotId:db.activePilotId;
