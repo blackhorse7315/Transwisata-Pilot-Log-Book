@@ -750,11 +750,13 @@ function recencyAircraftClass(f){
  if(['GULFSTREAMIVSP','GULFSTREAMIV','GIV','GIVSP'].includes(norm)||reg==='PKTWY')return 'Gulfstream IV-SP';
  return null;
 }
+// Ground Run is a ground activity and must not reset flight recency.
+function isGroundRunMission(f){return /^GROUND[\s_-]*RUN(?:\b|$)/i.test(String(f?.mission||'').trim())}
 function recencyEntries(){
  const today=recencyToday(),group=new Map();
  const pilots=personalMode?db.pilots.filter(p=>p.id===personalPilotId):db.pilots.filter(p=>db.activePilotId==='all'||p.id===db.activePilotId);
  for(const p of pilots){
-  const flights=db.flights.filter(f=>f.pilotId===p.id&&recencyUtcDay(f.date)!==null&&recencyUtcDay(f.date)<=today);
+  const flights=db.flights.filter(f=>f.pilotId===p.id&&!isGroundRunMission(f)&&recencyUtcDay(f.date)!==null&&recencyUtcDay(f.date)<=today);
   const byType=new Map();
   for(const f of flights){const a=getAircraft(f.aircraftId);const type=recencyAircraftClass(f);if(!type)continue;const key=type.toUpperCase();const date=recencyUtcDay(f.date);const prior=byType.get(key);if(!prior||date>prior.date)byType.set(key,{type,date});}
   if(!byType.size){group.set(p.id,[{pilot:p,type:'—',last:null,d90:null,d120:null,days:null,status:'NO DATA',instruction:'No flight records available'}]);continue}
@@ -769,7 +771,7 @@ function recencyStatusColor(status){return status==='CURRENT'?'#16803c':status==
 function recency(){const rows=recencyEntries(),label=(r)=>r.status==='CURRENT'?'Current':r.status==='WARNING'?'Warning':r.status==='90–120 DAYS'?'Recency training required':r.status==='OVER 120 DAYS'?'Over 120 days':'No data';
  return header('Recency Flight Data','Rotary wing: Helicopter Class Rating · Fixed wing: CASA 212-200, King Air 350i, Gulfstream IV-SP · Simulator included · OM D 4.5.2',`<button class="btn btn-primary" data-act="downloadRecencyPdf">${ic('down')} Download PDF · A4 Landscape</button>`)+
  `<section class="panel" style="padding:18px"><div class="table-wrap"><table class="data-table"><thead><tr><th>Pilot</th><th>Aircraft Type</th><th>Last Flight</th><th>90-Day Date</th><th>120-Day Date</th><th>Days Since</th><th>Status</th></tr></thead><tbody>${rows.map(r=>`<tr><td>${esc(r.pilot.name)}</td><td>${esc(r.type)}</td><td>${r.last?esc(dmy(r.last)):'—'}</td><td>${r.d90?esc(dmy(r.d90)):'—'}</td><td>${r.d120?esc(dmy(r.d120)):'—'}</td><td>${r.days??'—'}</td><td><strong style="color:${recencyStatusColor(r.status)}">${esc(label(r))}</strong></td></tr>`).join('')||'<tr><td colspan="7">No pilot records</td></tr>'}</tbody></table></div></section>`+
- `<section class="panel" style="padding:18px;margin-top:14px"><h2>Recency Requirements · OM D 4.5.2</h2><p>Current: more than 30 days until the 90-day threshold. Warning: 30 days or less remaining. After 90 days: 3 take-offs and landings in an aircraft not carrying passengers. After 120 days: briefing on aircraft/operational changes since the last flight, followed by the required 3 take-offs and landings. For turbojet aircraft or MTOW greater than 12,500 lb, training pilot supervision and a simulated critical-engine failure take-off/landing are required. Approved flight simulators may satisfy the take-off/landing requirement where authorized.</p><p style="font-size:12px">Simulator entries with recorded simulator PIC/SIC time are included by date. Status is an automated date-based indicator, not proof that take-offs, landings, briefings or simulator requirements have been completed. Day 90 is treated as within the 90-day window; training status begins on day 91.</p></section>`;
+ `<section class="panel" style="padding:18px;margin-top:14px"><h2>Recency Requirements · OM D 4.5.2</h2><p>Current: more than 30 days until the 90-day threshold. Warning: 30 days or less remaining. After 90 days: 3 take-offs and landings in an aircraft not carrying passengers. After 120 days: briefing on aircraft/operational changes since the last flight, followed by the required 3 take-offs and landings. For turbojet aircraft or MTOW greater than 12,500 lb, training pilot supervision and a simulated critical-engine failure take-off/landing are required. Approved flight simulators may satisfy the take-off/landing requirement where authorized.</p><p style="font-size:12px">All mission types except Ground Run are included by date. Simulator entries with recorded simulator PIC/SIC time are included. Status is an automated date-based indicator, not proof that take-offs, landings, briefings or simulator requirements have been completed. Day 90 is treated as within the 90-day window; training status begins on day 91.</p></section>`;
 }
 async function downloadRecencyPdf(){
  try{const rows=recencyEntries();if(!rows.length){notify('No recency records to export.',true);return}
