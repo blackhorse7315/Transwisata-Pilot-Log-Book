@@ -854,7 +854,7 @@ footer=`${cancel}<button class="btn btn-primary" type="submit" form="recordForm"
 }
 $('#modalTitle').textContent=title;$('#modalSub').textContent=sub;$('#modalBody').innerHTML=body;$('#modalFoot').innerHTML=footer;$('#modal').classList.toggle('narrow',type!=='flight');$('#modalWrap').classList.add('show');if(type==='flight')syncDutyHours();if(type==='chiefPilot')updateChiefSignaturePreview();document.body.style.overflow='hidden';if(type==='flight'){const f=$('#recordForm');f.elements.aircraftId.addEventListener('change',()=>{syncManualAircraft(f);syncAircraftHours(f)});f.elements.manualAircraft.addEventListener('input',e=>{if(/\s$/.test(e.target.value)&&/^PK\s$/i.test(e.target.value))e.target.value='PK-';});syncManualAircraft(f);const missionSelect=f.elements.missionSelect,missionManual=f.elements.missionManual;const syncMission=()=>{const custom=missionSelect.value==='__manual__';missionManual.style.display=custom?'':'none';missionManual.required=custom;missionSelect.required=!custom;if(custom)missionManual.focus()};missionSelect.addEventListener('change',syncMission);syncMission()}}
 function closeModal(){state.copyDraft=null;state.modalType=null;state.editing=null;$('#modalWrap').classList.remove('show');document.body.style.overflow='';if(realtimeRefreshNeeded)queueMicrotask(scheduleRealtimeRefresh)}
-const CREW_CHOICES=['Self','Tobing','Setyo','Purwoko','Marcel','Teddy','Ramdan','Eli','Alfajri','Sofwan','Rico','Riza','Wawan','Aldy','Berli'];
+const CREW_CHOICES=['Self']; // Individual pilot names are intentionally excluded from crew dropdowns.
 function crewField(name,label,value=''){
  const known=CREW_CHOICES.includes(value);
  const custom=Boolean(value&&!known);
@@ -862,7 +862,7 @@ function crewField(name,label,value=''){
  <select name="${name}" data-crew-select="${name}">
  <option value="">Select crew...</option>
  ${CREW_CHOICES.map(x=>`<option value="${esc(x)}" ${value===x?'selected':''}>${esc(x)}</option>`).join('')}
- <option value="__manual__" ${custom?'selected':''}>+ Add manually...</option>
+ <option value="__manual__" ${custom?'selected':''}>+ Enter crew name manually...</option>
  </select>
  <input type="text" data-crew-manual="${name}" maxlength="100" placeholder="Enter crew name" value="${custom?esc(value):''}" style="margin-top:8px;${custom?'':'display:none;'}">
  </div>`;
