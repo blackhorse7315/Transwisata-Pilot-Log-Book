@@ -524,6 +524,7 @@ function addBaselineToItems(items,id){const b=pilotBaseline(id);return items.map
 function baselineInput(name,label,val){return `<div class="field"><label>${esc(label)}</label><input name="${esc(name)}" inputmode="numeric" placeholder="4222:05" value="${esc(fmt(Number(val)||0))}" data-hour-baseline="1"><small>HH:MM — press Space to insert : (e.g. 4222:05)</small></div>`}
 function historicalLogged(pilotId,key,aircraftId,role){
  const rows=db.flights.filter(f=>f.pilotId===pilotId);
+ if(aircraftId&&String(role).startsWith('sim'))return rows.filter(f=>f.aircraftId===aircraftId).reduce((n,f)=>n+(Number(role==='simPic'?f.simPic:f.simSic)||0),0);
  if(aircraftId)return rows.filter(f=>f.aircraftId===aircraftId).reduce((n,f)=>n+(Number(role==='pic'?((f.dayPic!=null||f.nightPic!=null)?((f.dayPic||0)+(f.nightPic||0)):(f.ratingPic||0)):((f.daySic!=null||f.nightSic!=null)?((f.daySic||0)+(f.nightSic||0)):(f.ratingSic||0)))||0),0);
  const item=specializedSummary(rows).find(x=>BASELINE_MAP[x.name]===key);
  if(item)return Number(item.value)||0;
@@ -565,6 +566,19 @@ function saveOpeningHours(){
    if(types[k][role]<0){notify('Type rating target below logged flight hours.',true);return}
   }
  }
+ const simTypes={},initialSimTypes={...(old.initialSimTypes||{})},simTypeAdjustments={};
+ for(const a of db.fleet){
+  const k=a.id;initialSimTypes[k]={...(initialSimTypes[k]||{})};simTypeAdjustments[k]={};simTypes[k]={};
+  for(const role of ['pic','sic']){
+   const field='simRating'+(role==='pic'?'Pic_':'Sic_')+k;
+   const i=parseTime(first?d['initial_'+field]:fmt(Number(initialSimTypes[k][role])||0));
+   const target=parseTime(d['target_'+field]);
+   if(!Number.isFinite(i)||i<0||!Number.isFinite(target)||target<0){notify('Invalid simulator type rating hours.',true);return}
+   initialSimTypes[k][role]=i;const logged=historicalLogged(p.id,null,k,role==='pic'?'simPic':'simSic');
+   simTypeAdjustments[k][role]=target-i-logged;simTypes[k][role]=i+simTypeAdjustments[k][role];
+   if(simTypes[k][role]<0){notify('Simulator type rating target below logged simulator hours.',true);return}
+  }
+ }
  const manualRatings=[],manualNames=new Set();
  for(const row of form.querySelectorAll('.manual-rating-row')){
   const name=row.querySelector('.manual-rating-name').value.trim();
@@ -577,7 +591,7 @@ function saveOpeningHours(){
   manualNames.add(key);manualRatings.push({name,minutes});
  }
  const previousOpeningHours=p.openingHours;
- p.openingHours={...b,types,initial,adjustments,initialTypes,typeAdjustments,manualRatings,asOf:d.asOf||'',source:(d.source||'').trim()};
+ p.openingHours={...b,types,initial,adjustments,initialTypes,typeAdjustments,simTypes,initialSimTypes,simTypeAdjustments,manualRatings,asOf:d.asOf||'',source:(d.source||'').trim()};
  // Save the effective opening balances. The original initial values never change on subsequent edits.
  const btn=form.querySelector('[type=submit]');if(btn)btn.disabled=true;
  const snapshot=JSON.parse(JSON.stringify({...db,missions:missionList,duties:dutyList,chiefPilots}));
@@ -601,6 +615,7 @@ function historicalRatingTableRows(rows,pilotId,mode="aircraft"){
  const normalize=s=>String(s||'').trim().replace(/\s+/g,' ').toLocaleLowerCase();
  const entry=name=>{const key=normalize(name);if(!map.has(key))map.set(key,{name:String(name||'Unknown').trim(),pic:0,sic:0,simPic:0,simSic:0,manual:0});return map.get(key)};
  for(const a of db.fleet){const h=baseline.types?.[a.id];if(h){const e=entry(a.type);e.pic+=Number(h.pic)||0;e.sic+=Number(h.sic)||0}}
+ for(const a of db.fleet){const h=baseline.simTypes?.[a.id];if(h){const e=entry(a.type);e.simPic+=Number(h.pic)||0;e.simSic+=Number(h.sic)||0}}
  for(const f of rows){const e=entry(f.ratingType||getAircraft(f.aircraftId)?.type||'Unknown');let pic=Number((f.dayPic!=null||f.nightPic!=null)?((f.dayPic||0)+(f.nightPic||0)):(f.ratingPic||0))||0,sic=Number((f.daySic!=null||f.nightSic!=null)?((f.daySic||0)+(f.nightSic||0)):(f.ratingSic||0))||0;if(f.ratingPic==null&&f.ratingSic==null&&f.dayPic==null&&f.daySic==null){if(f.role==='PIC')pic+=Number(f.duration)||0;else if(f.role==='SIC')sic+=Number(f.duration)||0}e.pic+=pic;e.sic+=sic;e.simPic+=Number(f.simPic)||0;e.simSic+=Number(f.simSic)||0}
  for(const r of baseline.manualRatings||[]){if(!r||!String(r.name||'').trim())continue;const e=entry(r.name);e.manual=Number(r.minutes)||0}
  const entries=[...map.values()];
@@ -853,6 +868,8 @@ footer=`${cancel}<button class="btn btn-primary" type="submit" form="recordForm"
  ${BASELINE_FIELDS.map(([k,l])=>historicalCorrectionInput(k,l,Number(first?b[k]:b.initial[k])||0,historicalLogged(p.id,k),Number(first?0:b.adjustments?.[k])||0,first)).join('')}
  <div class="field wide"><h3>Historical Type Rating Hours</h3><p>Original hours stay fixed; corrections account for flights already logged.</p></div>
  ${db.fleet.map(a=>`<div class="field wide"><strong>${esc(a.reg)} / ${esc(a.type)}</strong><div class="form-grid" style="margin-top:8px">${['pic','sic'].map(role=>historicalCorrectionInput('rating'+(role==='pic'?'Pic_':'Sic_')+a.id,role.toUpperCase(),Number(first?b.types?.[a.id]?.[role]:b.initialTypes?.[a.id]?.[role])||0,historicalLogged(p.id,null,a.id,role),Number(first?0:b.typeAdjustments?.[a.id]?.[role])||0,first)).join('')}</div></div>`).join('')}
+ <div class="field wide"><h3>Historical Simulator Type Rating Hours</h3><p>Enter the current SIM PIC / SIM SIC total for each aircraft type. Logged simulator hours are included automatically and remain separate from aircraft flight hours.</p></div>
+ ${db.fleet.map(a=>`<div class="field wide"><strong>${esc(a.reg)} / ${esc(a.type)} — Simulator</strong><div class="form-grid" style="margin-top:8px">${['pic','sic'].map(role=>historicalCorrectionInput('simRating'+(role==='pic'?'Pic_':'Sic_')+a.id,'SIM '+role.toUpperCase(),Number(first?b.simTypes?.[a.id]?.[role]:b.initialSimTypes?.[a.id]?.[role])||0,historicalLogged(p.id,null,a.id,role==='pic'?'simPic':'simSic'),Number(first?0:b.simTypeAdjustments?.[a.id]?.[role])||0,first)).join('')}</div></div>`).join('')}
  <div class="field wide" style="border-top:1px solid var(--border,#ddd);padding-top:16px"><h3>Manual Historical Type Ratings (Summary Only)</h3><p>Add aircraft type names and their total historical hours. These entries appear only in Type Rating Hours by Aircraft; they do not create aircraft in Fleet or choices in Add Flight.</p><div id="manualRatingRows">${(b.manualRatings||[]).map(r=>manualRatingRow(r.name,r.minutes)).join('')}</div><button type="button" class="btn btn-sm" data-act="addManualRating">+ Add Historical Type Rating</button></div>
  <div class="field"><label>Balance As Of</label><input type="date" name="asOf" value="${esc(b.asOf||'')}"></div>
  <div class="field"><label>Source / Reference</label><input name="source" maxlength="160" value="${esc(b.source||'')}" placeholder="Previous pilot logbook / verified record"></div>
