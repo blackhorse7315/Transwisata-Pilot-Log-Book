@@ -719,6 +719,7 @@ async function exportValidatedPdf(){
  const lifetimeTotal=lifetime.find(x=>x.name==='Total Flight Hours')?.value||0;
  const typeMap={};
  for(const aircraft of db.fleet){const t=historical.types?.[aircraft.id];if(t){const v=typeMap[aircraft.type]||(typeMap[aircraft.type]={pic:0,sic:0,simPic:0,simSic:0});v.pic+=Number(t.pic)||0;v.sic+=Number(t.sic)||0}}
+ for(const aircraft of db.fleet){const t=historical.simTypes?.[aircraft.id];if(t){const v=typeMap[aircraft.type]||(typeMap[aircraft.type]={pic:0,sic:0,simPic:0,simSic:0});v.simPic+=Number(t.pic)||0;v.simSic+=Number(t.sic)||0}}
  for(const f of allRows){const type=f.ratingType||getAircraft(f.aircraftId)?.type||'Unclassified';const v=typeMap[type]||(typeMap[type]={pic:0,sic:0,simPic:0,simSic:0});
   v.simPic+=Number(f.simPic)||0;v.simSic+=Number(f.simSic)||0;
   v.pic+=Number((f.dayPic!=null||f.nightPic!=null)?((f.dayPic||0)+(f.nightPic||0)):(f.ratingPic||0))||0;
@@ -735,7 +736,7 @@ async function exportValidatedPdf(){
  const metric=(name,val)=>`<div class="metric"><span>${esc(name)}</span><strong>${fmt(val)}</strong></div>`;
  const lifetimeCards=lifetime.filter(x=>!x.heli||wing==='rotary'||x.value>0).map(x=>metric(x.name,x.value)).join('');
  const typeRows=Object.entries(typeMap).filter(([,v])=>v.pic+v.sic+v.simPic+v.simSic>0).sort((a,b)=>a[0].localeCompare(b[0])).map(([type,v])=>`<tr><td>${esc(type)}</td><td class="num">${fmt(v.pic)}</td><td class="num">${fmt(v.sic)}</td><td class="num">${fmt(v.simPic)}</td><td class="num">${fmt(v.simSic)}</td><td class="num"><b>${fmt(v.pic+v.sic)}</b></td></tr>`).join('');
- const historicalTypeRows=manualRatingRows.map(r=>`<tr><td>${esc(r.name)} <small>(Historical only)</small></td><td class="num">—</td><td class="num">—</td><td class="num"><b>${fmt(r.minutes)}</b></td></tr>`).join('');
+ const historicalTypeRows=manualRatingRows.map(r=>`<tr><td>${esc(r.name)} <small>(Historical only)</small></td><td class="num">—</td><td class="num">—</td><td class="num">—</td><td class="num">—</td><td class="num"><b>${fmt(r.minutes)}</b></td></tr>`).join('');
  const ratingFooter='';
  const dataRows=rows.map((f,i)=>`<tr><td>${i+1}</td><td>${esc(dmy(f.date))}</td><td>${esc(getAircraft(f.aircraftId)?.reg||'—')}</td><td>${esc(f.origin||'—')} – ${esc(f.destination||'—')}</td><td>${esc(f.role||'—')}</td><td><b>PIC:</b> ${esc(f.crewPic||'—')}<br><b>SIC:</b> ${esc(f.crewSic||'—')}</td><td>${esc(f.mission||'—')}</td><td class="num">${fmt(Number(f.duration)||0)}</td><td class="num">${fmt((Number(f.dayPic)||0)+(Number(f.daySic)||0)||Number(f.day)||0)}</td><td class="num">${fmt((Number(f.nightPic)||0)+(Number(f.nightSic)||0)||Number(f.night)||0)}</td></tr>`).join('');
  const win=window.open('','_blank');if(!win)return notify('Allow pop-ups to export the report.',true);
