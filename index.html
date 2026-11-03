@@ -648,35 +648,50 @@ function pilotCategory(pilotId){
  if(heli&&fixed)return 'mixed';
  return heli?'rotary':fixed?'fixed':null;
 }
-function canonicalReport(pilotId){
- const p=getPilot(pilotId);
- return JSON.stringify({pilotId,name:p?.name||'',openingHours:p?.openingHours||{},records:db.flights.filter(f=>f.pilotId===pilotId).sort((a,b)=>String(a.id).localeCompare(String(b.id)))});
+function canonicalReportData(pilotId,profile,records){
+ // Only fields affecting the actual flight-hours report are fingerprinted.
+ // Read from Firestore on both approval and export, so stale tab data cannot
+ // create an approval that fails immediately after saving.
+ return JSON.stringify({pilotId,name:profile?.name||'',openingHours:profile?.openingHours||{},records:(records||[]).slice().sort((a,b)=>String(a.id).localeCompare(String(b.id)))});
 }
-async function reportHash(pilotId){
- const bytes=new TextEncoder().encode(canonicalReport(pilotId));
+async function reportHashData(pilotId,profile,records){
+ const bytes=new TextEncoder().encode(canonicalReportData(pilotId,profile,records));
  const digest=await crypto.subtle.digest('SHA-256',bytes);
  return [...new Uint8Array(digest)].map(x=>x.toString(16).padStart(2,'0')).join('');
 }
+async function reportHash(pilotId){
+ return reportHashData(pilotId,getPilot(pilotId),db.flights.filter(f=>f.pilotId===pilotId));
+}
 async function approvePilot(pilotId){
  if(cloudProfile?.role!=='admin')return notify('Admin only.',true);
- const pilot=getPilot(pilotId),category=pilotCategory(pilotId);
+ const pilot=getPilot(pilotId);
  if(!pilot)return;
- if(!category||category==='mixed')return notify('Pilot records must have one wing for Chief Pilot validation. Mixed fleets require separate reports.',true);
- const cp=chiefPilots[category];
- if(!cp?.name||!cp?.position||!cp?.sign)return notify('Configure Chief Pilot name, position and signature URL first.',true);
- if(!confirm('Validate all current records for '+pilot.name+' as '+cp.name+'? This records your Admin approval; only approve if the Chief Pilot has actually authorized it.'))return;
- // Persist the approval before announcing success. Do not use the generic queued
- // save here: its error handler swallows failures and can show a false success.
+ if(!confirm('Validate the current saved flight records for '+pilot.name+'? Only confirm if the Chief Pilot has actually authorized this report.'))return;
  const previousApproval=pilot.reportApproval;
- const approval={hash:await reportHash(pilotId),chiefWing:category,chiefName:cp.name,chiefPosition:cp.position,chiefSign:cp.sign,approvedAt:new Date().toISOString(),approvedBy:cloudUser.uid};
  try{
-  await cloudQueue.catch(()=>{}); // wait for earlier edits to finish
-  await fbDb.doc('logbookPilots/'+pilotId).update({
-   'profile.reportApproval':approval,...cloudMeta()
-  });
+  // Finish pending Admin saves first, then fetch the authoritative report.
+  await cloudQueue;
+  const ref=fbDb.doc('logbookPilots/'+pilotId);
+  const snap=await ref.get({source:'server'});
+  if(!snap.exists)throw Error('Pilot record not found');
+  const saved=snap.data(), savedProfile=saved.profile||{}, savedRows=saved.flights||[];
+  // Calculate wing from the same saved records that will be approved.
+  const heli=savedRows.filter(f=>db.fleet.find(a=>a.id===f.aircraftId)?.category==='Helicopter').length;
+  const fixed=savedRows.length-heli;
+  const category=heli&&fixed?'mixed':heli?'rotary':fixed?'fixed':null;
+  if(!category||category==='mixed')throw Error('Pilot records must have one wing for Chief Pilot validation. Mixed fleets require separate reports.');
+  const config=await fbDb.doc('logbook/config').get({source:'server'});
+  const configured=config.exists?(config.data()?.chiefPilots||{}):chiefPilots;
+  const cp=configured[category];
+  if(!cp?.name||!cp?.position||!cp?.sign)throw Error('Configure Chief Pilot name, position and signature URL first.');
+  const approval={hash:await reportHashData(pilotId,savedProfile,savedRows),chiefWing:category,chiefName:cp.name,chiefPosition:cp.position,chiefSign:cp.sign,approvedAt:new Date().toISOString(),approvedBy:cloudUser.uid};
+  await ref.update({'profile.reportApproval':approval,...cloudMeta()});
+  // Confirm the persisted approval before reporting success.
+  const verified=await ref.get({source:'server'});
+  if(verified.data()?.profile?.reportApproval?.hash!==approval.hash)throw Error('Validation was not confirmed by the server');
   pilot.reportApproval=approval;
   render();
-  notify('PDF validation saved. Export PDF + Chief Pilot now reflects the approval.');
+  notify('Chief Pilot validation saved for '+pilot.name+'. Export PDF + Chief Pilot will use this approval.');
  }catch(e){
   pilot.reportApproval=previousApproval;
   render();
@@ -706,7 +721,8 @@ async function exportValidatedPdf(){
  if(wing==='mixed')return notify('Mixed Rotary/Fixed Wing entries require separate wing validation and reporting.',true);
  const cp=chiefPilots[wing]||{};
  const approval=pilot.reportApproval;
- const approved=!!(approval&&approval.hash===await reportHash(pilotId)&&approval.chiefWing===wing&&approval.chiefName&&approval.chiefSign);
+ const currentHash=await reportHashData(pilotId,pilot,allRows);
+ const approved=!!(approval&&approval.hash===currentHash&&approval.chiefWing===wing&&approval.chiefName&&approval.chiefSign);
  // Use the Chief Pilot identity and signature captured at the time of approval.
  // A later edit to the admin's current Chief Pilot profile must not silently erase
  // an already authorized validation; revalidation replaces this snapshot.
